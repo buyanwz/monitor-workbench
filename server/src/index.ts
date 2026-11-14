@@ -5,6 +5,7 @@
 // 鉴权：除健康检查、口令设置/登录、签名文件下载外，全部接口须 Bearer 会话令牌。
 
 import {
+  handleBatchCreateAccounts,
   handleCreateAccount,
   handleDeleteAccount,
   handleGetAccount,
@@ -44,6 +45,7 @@ const API_DOC = {
     "GET  /api/v1/auth/me (Bearer)",
     "POST /api/v1/auth/change-password {old_password, new_password} (Bearer)",
     "POST /api/v1/accounts (Bearer)",
+    "POST /api/v1/accounts/batch {platform, lines} (Bearer)",
     "GET  /api/v1/accounts (Bearer)",
     "GET  /api/v1/accounts/:id (Bearer)",
     "PATCH /api/v1/accounts/:id (Bearer)",
@@ -192,6 +194,7 @@ export default {
       else if (path === "/api/v1/auth/me" && method === "GET") res = await handleMe(env, req);
       else if (path === "/api/v1/auth/change-password" && method === "POST") res = await handleChangePassword(env, req);
       else if (path === "/api/v1/accounts" && method === "POST") res = await handleCreateAccount(env, req);
+      else if (path === "/api/v1/accounts/batch" && method === "POST") res = await handleBatchCreateAccounts(env, req);
       else if (path === "/api/v1/accounts" && method === "GET") res = await handleListAccounts(env, req);
       else if (path === "/api/v1/tasks/trigger" && method === "POST") res = await handleTriggerCollect(env, req);
       else if (path === "/api/v1/tasks/backfill" && method === "POST") res = await handleBackfill(env, req);

@@ -140,5 +140,71 @@ const badPlat = await req("POST", "/api/v1/accounts", {
 }, token);
 check("未知平台建账号报 400", badPlat.status === 400, badPlat.text);
 
+// 7. v0.3.1 批量添加账号：逐行结果、短链拒绝、去重、去 token、鉴权
+const batchNoAuth = await req("POST", "/api/v1/accounts/batch", { platform: "kuaishou", lines: ["https://www.kuaishou.com/profile/abc"] });
+check("未登录批量添加报 401", batchNoAuth.status === 401, batchNoAuth.text);
+const batchBadPlat = await req("POST", "/api/v1/accounts/batch", { platform: "bilibili", lines: ["https://space.bilibili.com/1"] }, token);
+check("批量添加未知平台报 400", batchBadPlat.status === 400, batchBadPlat.text);
+const batchEmpty = await req("POST", "/api/v1/accounts/batch", { platform: "kuaishou", lines: [] }, token);
+check("批量添加空行数组报 400", batchEmpty.status === 400, batchEmpty.text);
+const dupPre = await req("POST", "/api/v1/accounts", {
+  platform: "kuaishou",
+  name: "重复预置",
+  home_url: "https://www.kuaishou.com/profile/batch_dup",
+  account_id: "batch_dup",
+  remark: null,
+}, token);
+check("批量去重预置账号成功", (dupPre.status === 200 || dupPre.status === 201) && dupPre.data.ok === true, dupPre.text);
+const batch = await req("POST", "/api/v1/accounts/batch", {
+  platform: "kuaishou",
+  lines: [
+    "https://www.kuaishou.com/profile/batch_one",
+    "https://www.kuaishou.com/profile/batch_two 搞笑达人",
+    "",
+    "https://www.kuaishou.com/profile/batch_dup",
+    "https://www.kuaishou.com/profile/batch_one",
+    "not-a-url",
+    "https://www.kuaishou.com/profile/",
+  ],
+}, token);
+check(
+  "批量添加汇总正确（新增2跳过2失败2，空行不计）",
+  batch.status === 200 && batch.data.ok === true && batch.data.summary.added === 2 && batch.data.summary.skipped === 2 &&
+    batch.data.summary.failed === 2 && batch.data.summary.total === 6,
+  batch.text,
+);
+const br = batch.data.results || [];
+check(
+  "批量逐行结果行号对齐原文行",
+  br.length === 6 && br[0].line === 1 && br[1].line === 2 && br[2].line === 4 && br[3].line === 5 && br[4].line === 6 && br[5].line === 7,
+  batch.text,
+);
+check("批量第一行已添加且账号 ID 取自链接", br[0].status === "added" && br[0].account_id === "batch_one", batch.text);
+check("批量已存在行跳过并给原因", br[2].status === "skipped" && String(br[2].reason || "").includes("已存在"), batch.text);
+check("批量坏链接行失败并给原因", br[4].status === "failed" && String(br[4].reason || "").length > 0, batch.text);
+const listAfter = await req("GET", "/api/v1/accounts?platform=kuaishou", undefined, token);
+const two = (listAfter.data.accounts || []).filter((a) => a.account_id === "batch_two")[0];
+check("批量添加的账号进列表且备注与默认名称在", !!two && two.remark === "搞笑达人" && two.name === "batch_two", listAfter.text);
+const batchDy = await req("POST", "/api/v1/accounts/batch", {
+  platform: "douyin",
+  lines: ["https://v.douyin.com/abc123/", "https://www.douyin.com/user/MS4wLjABAAAAbatch"],
+}, token);
+check(
+  "批量里短链行失败、完整链接行成功",
+  batchDy.status === 200 && batchDy.data.summary.failed === 1 && batchDy.data.summary.added === 1 &&
+    String(batchDy.data.results[0].reason || "").includes("请贴完整主页链接"),
+  batchDy.text,
+);
+const batchXhs = await req("POST", "/api/v1/accounts/batch", {
+  platform: "xiaohongshu",
+  lines: ["https://www.xiaohongshu.com/user/profile/24charuserid1234567891?xsec_token=tok999&xsec_source=pc_user"],
+}, token);
+check("批量小红书行成功", batchXhs.status === 200 && batchXhs.data.summary.added === 1, batchXhs.text);
+const listXhs = await req("GET", "/api/v1/accounts?platform=xiaohongshu", undefined, token);
+const xhsAdded = (listXhs.data.accounts || []).filter((a) => a.account_id === "24charuserid1234567891")[0];
+check("批量小红书链接去 token 后入库", !!xhsAdded && !String(xhsAdded.home_url).includes("xsec_token"), listXhs.text);
+const logs = await req("GET", "/api/v1/operation-logs?action=account_batch_create", undefined, token);
+check("批量添加写操作日志", logs.status === 200 && logs.data.total >= 1 && String(logs.data.logs[0].detail || "").includes("批量添加"), logs.text);
+
 console.log(`\n== 结果：通过 ${passed}，失败 ${failed} ==`);
 process.exit(failed === 0 ? 0 : 1);

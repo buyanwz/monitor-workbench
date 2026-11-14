@@ -230,6 +230,9 @@ td .btn-row { flex-wrap: nowrap; }
 
 .json-textarea { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; min-height: 140px; }
 
+/* 账号页批量添加：文本框高一些，方便一次粘多行 */
+#batch-add-textarea { min-height: 160px; }
+
 /* ---------- 窄屏 ---------- */
 @media (max-width: 1100px) {
   .grid-stats { grid-template-columns: repeat(2, 1fr); }

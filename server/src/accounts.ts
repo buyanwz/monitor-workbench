@@ -120,6 +120,142 @@ export async function handleCreateAccount(env: Env, req: Request): Promise<Respo
   return json({ ok: true, account: row ? publicAccount(row) : null }, 201);
 }
 
+const BATCH_MAX_LINES = 200;
+
+/**
+ * 从主页链接里取平台账号 ID：取 URL 路径最后一段（查询串/锚点/末尾斜杠已去掉）。
+ * 三平台主页链接的最后一段就是账号 ID（快手 profile/<eid>、抖音 user/<secUid>、
+ * 小红书 user/profile/<user_id>）。取不到（不是合法 URL、路径为空、最后一段是
+ * 通用路径词）时返回 null，调用方按行报错，绝不编造 ID。
+ */
+export function deriveAccountIdFromUrl(rawUrl: string): string | null {
+  let pathname = "";
+  try {
+    pathname = new URL(rawUrl).pathname;
+  } catch {
+    return null;
+  }
+  const segments = pathname.split("/").filter((s) => s.length > 0);
+  const last = segments[segments.length - 1];
+  if (!last) return null;
+  let decoded = last;
+  try {
+    decoded = decodeURIComponent(last);
+  } catch {
+    decoded = last;
+  }
+  if (!decoded || decoded.length > 200) return null;
+  if (
+    ["user", "profile", "explore", "video", "note", "search", "channel", "discover", "home", "short-video"].includes(
+      decoded.toLowerCase(),
+    )
+  ) {
+    return null;
+  }
+  return decoded;
+}
+
+export interface BatchLineResult {
+  line: number;
+  url: string;
+  status: "added" | "skipped" | "failed";
+  account_id: string | null;
+  id: number | null;
+  reason?: string;
+}
+
+/**
+ * 批量添加账号：一批一个平台，一行一个主页链接，行尾可跟备注。
+ * 逐行处理：有效行入库、无效行不影响其他行；每行一条结果（空行忽略）；
+ * 名称默认取链接里的账号 ID（添加后可在列表里编辑改名）；整批写一条操作日志。
+ * 校验与单个添加同一套：平台白名单、抖音短链拒绝、小红书去 xsec 参数、
+ * UNIQUE(platform, account_id) 去重。
+ */
+export async function handleBatchCreateAccounts(env: Env, req: Request): Promise<Response> {
+  if (!(await authenticate(env, req))) return unauthorized();
+  const body = await readJsonBody(req);
+  if (!body) return err("请求体不是合法 JSON", 400);
+  const platform = reqString(body.platform, 32);
+  if (!platform || !(PLATFORMS as readonly string[]).includes(platform)) return err("平台不在支持范围内", 400);
+  const lines = body.lines;
+  if (!Array.isArray(lines) || lines.length === 0) return err("请至少粘贴一行主页链接", 400);
+  if (lines.length > BATCH_MAX_LINES) return err(`一次最多 ${BATCH_MAX_LINES} 行`, 400);
+  for (const l of lines) {
+    if (typeof l !== "string") return err("lines 须为字符串数组", 400);
+  }
+  const results: BatchLineResult[] = [];
+  let added = 0;
+  let skipped = 0;
+  let failed = 0;
+  const now = nowMs();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] as string).trim();
+    if (!trimmed) continue; // 空行直接跳过，不计入结果
+    const m = /^(\S+)(?:\s+(.*))?$/.exec(trimmed);
+    const urlToken = m ? m[1] : trimmed;
+    const remarkText = m && m[2] ? m[2].trim() : "";
+    const fail = (reason: string) => {
+      results.push({ line: i + 1, url: urlToken, status: "failed", account_id: null, id: null, reason });
+      failed++;
+    };
+    if (urlToken.length > 500) {
+      fail("主页链接过长");
+      continue;
+    }
+    if (remarkText.length > 500) {
+      fail("备注过长");
+      continue;
+    }
+    const normalized = normalizeHomeUrl(platform, urlToken);
+    if ("error" in normalized) {
+      fail(normalized.error);
+      continue;
+    }
+    const derived = deriveAccountIdFromUrl(normalized.url);
+    if (!derived) {
+      fail("无法从链接里识别账号 ID，请确认这是达人主页链接，或用单个添加填写平台账号 ID");
+      continue;
+    }
+    const res = await env.DB.prepare(
+      "INSERT INTO monitor_account (platform, name, home_url, account_id, remark, status, login_state_status, health, fail_streak, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'missing', 'normal', 0, ?, ?)",
+    )
+      .bind(platform, derived, normalized.url, derived, remarkText || null, now, now)
+      .run()
+      .catch((e: unknown) => {
+        if (String(e).includes("UNIQUE")) return null;
+        throw e;
+      });
+    if (!res) {
+      results.push({
+        line: i + 1,
+        url: urlToken,
+        status: "skipped",
+        account_id: derived,
+        id: null,
+        reason: "该平台下已存在相同账号，已跳过",
+      });
+      skipped++;
+      continue;
+    }
+    const id = res.meta.last_row_id as number;
+    results.push({ line: i + 1, url: urlToken, status: "added", account_id: derived, id });
+    added++;
+  }
+  await opLog(
+    env.DB,
+    "account_batch_create",
+    "account",
+    null,
+    `批量添加（${platform}）：新增 ${added} 个、跳过重复 ${skipped} 个、失败 ${failed} 个`,
+  );
+  return json({
+    ok: true,
+    platform,
+    summary: { total: results.length, added, skipped, failed },
+    results,
+  });
+}
+
 export async function handleListAccounts(env: Env, req: Request): Promise<Response> {
   if (!(await authenticate(env, req))) return unauthorized();
   const url = new URL(req.url);

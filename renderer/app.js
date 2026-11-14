@@ -19,6 +19,7 @@ var state = {
 var ui = {
   works: { platform: "", account_id: "", date: "", downloaded: "", sort: "published_desc", page: 1 },
   tasks: { collect_date: "", status: "", account_id: "", page: 1 },
+  accounts: { batchResult: null }, // 最近一次批量添加的结果（刷新列表后仍展示，直到下一次提交）
   notifications: { type: "", unread_only: false, page: 1 },
   logs: { action: "", page: 1 },
   cleanup: { page: 1 },
@@ -52,7 +53,7 @@ var SORT_LABEL = { likes_desc: "点赞从高到低", published_desc: "发布时�
 var REASON_LABEL = { expired: "已过期" };
 var ACTION_LABEL = {
   auth_setup: "设置口令", auth_login: "登录", auth_change_password: "修改口令",
-  account_create: "新增账号", account_update: "更新账号", account_disable: "停用账号",
+  account_create: "新增账号", account_batch_create: "批量添加账号", account_update: "更新账号", account_disable: "停用账号",
   account_enable: "启用账号", account_delete: "删除账号", account_health_reset: "重置健康状态",
   login_state_update: "配置登录态", collect_trigger: "触发采集", collect_retry: "重试任务",
   backfill: "漏跑补采", intake: "手动上报", download: "下载", cleanup: "清理",
@@ -439,7 +440,7 @@ PAGE_LOADERS.dashboard = async function () {
 };
 
 /* ================= 账号管理 =================
-   GET /accounts · POST /accounts · GET /accounts/:id（编辑时取最新）
+   GET /accounts · POST /accounts · POST /accounts/batch（批量，一批一个平台）· GET /accounts/:id（编辑时取最新）
    PATCH /accounts/:id（只可改 name/home_url/remark）· DELETE /accounts/:id
    POST /accounts/:id/status · POST /accounts/:id/login-state · POST /accounts/:id/reset-health */
 PAGE_LOADERS.accounts = async function () {
@@ -458,8 +459,9 @@ PAGE_LOADERS.accounts = async function () {
     }
     var rows = accounts.map(function (a) {
       return "<tr>" +
-        '<td><div class="cell-main">' + esc(a.name) + '</div><div class="cell-sub">' + esc(labelOf(PLATFORM_LABEL, a.platform)) + " · 账号 ID：" + esc(a.account_id) + "</div></td>" +
-        '<td><a href="' + esc(a.home_url) + '" target="_blank" rel="noopener noreferrer">打开主页</a></td>' +
+        '<td><div class="cell-main">' + esc(a.name) + '</div><div class="cell-sub"><span class="badge badge-blue">' + esc(labelOf(PLATFORM_LABEL, a.platform)) + "</span></div>" +
+          '<div class="cell-sub">账号 ID：' + esc(a.account_id) + "</div></td>" +
+        '<td><a href="' + esc(a.home_url) + '" target="_blank" rel="noopener noreferrer">打开主页</a><div class="cell-sub">' + esc(a.home_url) + "</div></td>" +
         "<td>" + esc(a.remark || "—") + "</td>" +
         '<td><span class="badge ' + (a.status === "active" ? "badge-green" : "badge-gray") + '">' + esc(labelOf(ACCOUNT_STATUS_LABEL, a.status)) + "</span></td>" +
         '<td><span class="badge ' + badgeClassForHealth(a.health) + '">' + esc(labelOf(HEALTH_LABEL, a.health)) + "</span>" +
@@ -476,18 +478,85 @@ PAGE_LOADERS.accounts = async function () {
         "</div></td></tr>";
     }).join("");
     page.innerHTML =
+      '<div class="card" id="account-add-guide"><div class="card-head"><h2>添加要采集的达人账号</h2>' +
+      '<div class="btn-row"><button type="button" class="btn" id="goto-batch-add">批量添加</button>' +
+      '<button type="button" class="btn btn-primary" id="account-add-btn" data-acc="new">添加账号</button></div></div>' +
+      '<p class="form-hint" style="margin-bottom:0">在这里添加要采集的达人账号：选平台、贴达人主页链接、起个名字。加好后，每天 8:00 会自动采集这个达人的最新作品；一次加多个可以用下面的批量添加。</p></div>' +
+      '<div class="card" id="batch-add-card"><div class="card-head"><h2>批量添加</h2></div>' +
+      '<form id="batch-add-form">' +
+      '<label class="field"><span>平台（一批只加一个平台，换平台再贴一批）</span>' +
+      '<select name="platform"><option value="kuaishou">快手</option><option value="douyin">抖音</option><option value="xiaohongshu">小红书</option></select></label>' +
+      '<label class="field"><span>主页链接（一行一个，行尾可以跟备注）</span>' +
+      '<textarea id="batch-add-textarea" name="lines" placeholder="https://www.kuaishou.com/profile/3xXXXXXXXXXXXXXXX\nhttps://www.kuaishou.com/profile/3xYYYYYYYYYYYYYYY 搞笑类达人"></textarea></label>' +
+      '<p class="form-hint">格式：一行一个主页链接；链接后面空一格可以写备注。名称默认取链接里的账号 ID，添加后可以在列表里点“编辑”改成达人名字。重复的账号会自动跳过，写错的行不会影响其他行。</p>' +
+      '<div class="alert alert-error" id="batch-add-error" hidden></div>' +
+      '<div class="btn-row"><button type="submit" class="btn btn-primary">批量添加</button></div>' +
+      "</form>" +
+      '<div id="batch-add-results">' + batchResultsHtml() + "</div></div>" +
       '<div class="card"><div class="card-head"><h2>账号列表（共 ' + accounts.length + ' 个）</h2>' +
       '<button type="button" class="btn btn-primary" data-acc="new">新增账号</button></div>' +
       (accounts.length === 0
-        ? '<div class="empty">还没有账号，点右上角“新增账号”添加一个吧。</div>'
+        ? '<div class="empty" id="accounts-empty-guide"><p style="font-size:15px;color:var(--text)">还没有要采集的账号</p>' +
+          "<p>三步加上第一个达人：<br>1. 点“添加账号”，选平台<br>2. 粘贴达人主页链接<br>3. 起个名字，点“新增”</p>" +
+          '<div class="btn-row" style="justify-content:center"><button type="button" class="btn btn-primary" data-acc="new">添加账号</button></div>' +
+          '<p class="small muted">一次加多个可以用上面的批量添加，一行一个链接。</p></div>'
         : '<div class="table-wrap"><table><thead><tr><th>账号</th><th>主页</th><th>备注</th><th>状态</th><th>健康</th><th>登录态</th><th>操作</th></tr></thead><tbody>' + rows + "</tbody></table></div>") +
       "</div>" +
       '<p class="notice-text">合规提示：仅采集已授权账号。登录态只显示“已配置 / 未配置 / 已失效”，原文永不回显；重新配置会覆盖旧的登录态。' +
       (browser && browser.available ? "浏览器采集模式下，采集用浏览器里对应平台的登录，见设置页「浏览器采集」。" : "") + "</p>";
+    /* 批量添加表单：提交后刷新列表，结果保留在批量区展示 */
+    var batchForm = $("#batch-add-form", page);
+    if (batchForm) {
+      batchForm.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var errBox = $("#batch-add-error", page);
+        errBox.hidden = true;
+        var fd = new FormData(batchForm);
+        var btn = batchForm.querySelector('button[type="submit"]');
+        await withBusy(btn, async function () {
+          try {
+            var data = await api("POST", "/accounts/batch", {
+              platform: String(fd.get("platform") || ""),
+              lines: String(fd.get("lines") || "").split(/\r?\n/),
+            });
+            data.submitted_at = Date.now();
+            ui.accounts.batchResult = data;
+            toast("批量添加完成：新增 " + fmtCount(data.summary.added) + " 个，跳过 " + fmtCount(data.summary.skipped) + " 个，失败 " + fmtCount(data.summary.failed) + " 个", data.summary.failed > 0 ? undefined : "success");
+            PAGE_LOADERS.accounts();
+          } catch (err) { errBox.textContent = err.message; errBox.hidden = false; }
+        });
+      });
+    }
+    var gotoBatch = $("#goto-batch-add", page);
+    if (gotoBatch) {
+      gotoBatch.addEventListener("click", function () {
+        var card = $("#batch-add-card", page);
+        if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+        var ta = $("#batch-add-textarea", page);
+        if (ta) ta.focus();
+      });
+    }
   } catch (err) {
     page.innerHTML = errorBoxHtml(err.message);
   }
 };
+/* 批量添加逐行结果（最近一次提交的，刷新列表后仍展示） */
+function batchResultsHtml() {
+  var r = ui.accounts.batchResult;
+  if (!r) return "";
+  var s = r.summary || { total: 0, added: 0, skipped: 0, failed: 0 };
+  var rows = (r.results || []).map(function (it) {
+    var badge = it.status === "added" ? '<span class="badge badge-green">已添加</span>'
+      : it.status === "skipped" ? '<span class="badge badge-amber">已跳过重复</span>'
+      : '<span class="badge badge-red">失败</span>';
+    return "<tr><td>" + fmtCount(it.line) + '</td><td class="mono">' + esc(it.url) + "</td><td>" + badge + "</td><td>" +
+      esc(it.status === "added" ? ("账号 ID：" + (it.account_id || "")) : (it.reason || "")) + "</td></tr>";
+  }).join("");
+  return '<div style="margin-top:16px"><h3>批量添加结果：新增 ' + fmtCount(s.added) + " 个，跳过重复 " + fmtCount(s.skipped) +
+    " 个，失败 " + fmtCount(s.failed) + " 个（共 " + fmtCount(s.total) + " 行" +
+    (r.submitted_at ? "，提交于 " + fmtDateTime(r.submitted_at) : "") + "）</h3>" +
+    '<div class="table-wrap"><table><thead><tr><th>行</th><th>链接</th><th>结果</th><th>说明</th></tr></thead><tbody>' + rows + "</tbody></table></div></div>";
+}
 async function onAccountsClick(e) {
   var btn = e.target.closest("[data-acc]");
   if (!btn) return;

@@ -142,6 +142,16 @@ e2e 测试断言（152 条）与上限专项断言（11 条）。
 - 夹具说明：新 mapper 测试的夹具形状只用探针报告里有扩展代码证据的字段，
   注明源自扩展代码、非真实截获；真实字段形状以真机取证为准。
 
+**v0.3.1 改动（账号添加入口明确化＋批量添加）：**
+- `server/src/accounts.ts`：新增 `POST /api/v1/accounts/batch`（一批一个平台，一行一个
+  主页链接、行尾可跟备注；账号 ID 从链接路径最后一段取，取不到按行报错不编造；
+  名称默认取账号 ID；复用短链拒绝/去 token/去重；每行一条结果；整批写一条操作日志）。
+- `server/src/index.ts`：新接口进路由与 API 文档，走现有鉴权与限流。
+- `renderer/`：账号页顶部加“添加要采集的达人账号”引导卡（主按钮＋一句话说明）；
+  新增批量添加区（平台选择＋文本框＋格式示例＋逐行结果）；空账号时三步引导；
+  列表每行加平台徽章并显示主页链接原文；操作日志标签补批量添加。
+- `electron/main.ts`：冒烟加账号页核对（添加按钮/批量区/空状态引导）。
+
 **未复用（Cloudflare 专属，已废弃）：** wrangler.toml、Worker 绑定、D1/R2 远端资源。
 D1 库已建但本方案不用云端，留着不花钱。
 
@@ -159,9 +169,9 @@ npm run start            # 只起本地服务（CLI，端口 MONITOR_PORT，默�
 （`MONITOR_MOCK_FETCHER=1 MONITOR_TEST_MODE=1`，假密钥，调度器关闭，手动驱动 cron），
 跑完即杀；直连库的 helper 由 `test/dbsql.mjs`（node:sqlite 直连）实现。
 `MONITOR_SMOKE=1` 冒烟：Electron 无头跑完整首用流程（设口令 → 进应用 → 看板渲染 →
-设置页浏览器采集区核对）。
+设置页浏览器采集区核对 → 账号页添加入口与批量区核对）。
 手动跑的脚本（不进 `npm test`）：`test/port-fallback.sh`（端口冲突兜底 2 条）、
-`test/run-browser-routes.sh`（浏览器/上报令牌/账号链接接口 26 条）、
+`test/run-browser-routes.sh`（浏览器/上报令牌/账号链接/批量添加接口 40 条）、
 `test/browser-collect-verify.mjs`（探针式验证 92 条：三平台映射单测＋本地页截获端到端＋
 采集引擎全链路＋SSR 补充捕获；只连 127.0.0.1，绝不访问任何平台）。
 

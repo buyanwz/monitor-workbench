@@ -54,7 +54,7 @@ async function createWindow(serverUrl: string): Promise<void> {
   await mainWindow.loadURL(`${serverUrl}/ui/`);
 
   if (SMOKE) {
-    // 无头冒烟：走完整首用流程（设口令 → 进应用 → 看板渲染 → 设置页浏览器采集区）且 API 通，超时 60 秒判失败。
+    // 无头冒烟：走完整首用流程（设口令 → 进应用 → 看板渲染 → 设置页浏览器采集区 → 账号页添加入口与批量区）且 API 通，超时 60 秒判失败。
     // 烟囱口令只写进本次临时数据目录，随目录一起丢弃，不是真实凭证。
     const timer = setTimeout(() => {
       console.log("SMOKE FAIL: timeout");
@@ -111,18 +111,41 @@ async function createWindow(serverUrl: string): Promise<void> {
               await sleep(500);
             }
           }
+          // 5. 打开账号管理页，核对添加入口、批量添加区、空状态引导出现（全新库应为 0 账号）
+          let accountAddOk = false;
+          let batchAreaOk = false;
+          let emptyGuideOk = false;
+          if (appVisible) {
+            const navAcc = document.querySelector('[data-page="accounts"]');
+            if (navAcc) navAcc.click();
+            for (let i = 0; i < 40; i++) {
+              const addBtn = document.querySelector("#account-add-btn");
+              const batchCard = document.querySelector("#batch-add-card");
+              const batchTa = document.querySelector("#batch-add-textarea");
+              const emptyGuide = document.querySelector("#accounts-empty-guide");
+              accountAddOk = !!addBtn;
+              batchAreaOk = !!(batchCard && batchTa);
+              emptyGuideOk = !!emptyGuide;
+              if (accountAddOk && batchAreaOk && emptyGuideOk) break;
+              await sleep(500);
+            }
+          }
           const h = await fetch("/api/v1/health").then(r => r.json()).catch(e => ({ error: String(e) }));
-          return { title: document.title, hasApp: !!document.querySelector("#app"), mode, submitted, appVisible, pageChildren, health: h, browserSection, reportAddrOk };
+          return { title: document.title, hasApp: !!document.querySelector("#app"), mode, submitted, appVisible, pageChildren, health: h, browserSection, reportAddrOk, accountAddOk, batchAreaOk, emptyGuideOk };
         })()`,
       )) as Record<string, unknown>;
       clearTimeout(timer);
       log("smoke info", JSON.stringify(info));
       const settingsOk = info.appVisible !== true || (info.browserSection === true && info.reportAddrOk === true);
+      const accountsOk =
+        info.appVisible !== true ||
+        (info.accountAddOk === true && info.batchAreaOk === true && info.emptyGuideOk === true);
       const ok =
         info.title &&
         info.hasApp === true &&
         (info.health as { ok?: boolean } | undefined)?.ok === true &&
         settingsOk &&
+        accountsOk &&
         (info.mode === "login" ||
           (info.mode === "setup" &&
             info.submitted === true &&
