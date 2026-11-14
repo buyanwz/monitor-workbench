@@ -53,8 +53,15 @@ export interface MediaBytes {
 }
 
 export interface PlatformFetcher {
-  fetchWorks(account: { platform: string; account_id: string; name: string }, loginState: string): Promise<FetchResult>;
+  fetchWorks(
+    account: { platform: string; account_id: string; name: string; home_url?: string },
+    loginState: string,
+  ): Promise<FetchResult>;
   download(url: string): Promise<MediaBytes>;
+  /** 浏览器采集器为 true：登录态在浏览器分区 cookie 里，不走 login_state_enc 解密门。 */
+  readonly usesBrowserLogin?: boolean;
+  /** 浏览器采集器：分区内是否存在平台 cookie（登录状态启发式判断）。 */
+  checkBrowserLogin?(): Promise<boolean>;
 }
 
 /** 生产占位采集器：未实现，抛错；绝不访问真实平台接口。 */
@@ -166,7 +173,13 @@ export const mockFetcher: PlatformFetcher = {
   },
 };
 
-/** 按环境选择采集器：MOCK_FETCHER=1 用 mock，否则用未实现占位（抛错，不访问真实接口）。 */
-export function selectFetcher(env: { MOCK_FETCHER?: string }): PlatformFetcher {
-  return env.MOCK_FETCHER === "1" ? mockFetcher : unimplementedFetcher;
+/**
+ * 按环境选择采集器：MOCK_FETCHER=1 用 mock；Electron 注入了浏览器采集器则用它；
+ * 否则用未实现占位（抛错，不访问真实接口）。CLI/无 Electron 环境永远走不到浏览器分支，
+ * 绝不静默降级。
+ */
+export function selectFetcher(env: { MOCK_FETCHER?: string; BROWSER_FETCHER?: PlatformFetcher }): PlatformFetcher {
+  if (env.MOCK_FETCHER === "1") return mockFetcher;
+  if (env.BROWSER_FETCHER) return env.BROWSER_FETCHER;
+  return unimplementedFetcher;
 }

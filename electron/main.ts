@@ -5,16 +5,30 @@
 import { app, BrowserWindow, dialog, Menu, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { startLocalServer, type RunningServer } from "../server/src/server";
+import { BrowserCollector } from "./browser-collect";
 
 const SMOKE = process.env.MONITOR_SMOKE === "1";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningServer | null = null;
+let collector: BrowserCollector | null = null;
 let updateCheckInFlight = false;
 let manualCheckPending = false;
 
 function dataDir(): string {
   return process.env.MONITOR_DATA_DIR || app.getPath("userData");
+}
+
+/** 本地服务端口：固定 17881（上报地址依赖它）；MONITOR_PORT 可覆盖，0 表示随机。 */
+function resolvePort(): number {
+  const raw = process.env.MONITOR_PORT;
+  if (raw === undefined || raw === "") return 17881;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 65535) {
+    log(`MONITOR_PORT 无效（${raw}），改用默认端口 17881`);
+    return 17881;
+  }
+  return n;
 }
 
 function log(...args: unknown[]): void {
@@ -40,12 +54,12 @@ async function createWindow(serverUrl: string): Promise<void> {
   await mainWindow.loadURL(`${serverUrl}/ui/`);
 
   if (SMOKE) {
-    // 无头冒烟：走完整首用流程（设口令 → 进应用 → 看板渲染）且 API 通，超时 45 秒判失败。
+    // 无头冒烟：走完整首用流程（设口令 → 进应用 → 看板渲染 → 设置页浏览器采集区）且 API 通，超时 60 秒判失败。
     // 烟囱口令只写进本次临时数据目录，随目录一起丢弃，不是真实凭证。
     const timer = setTimeout(() => {
       console.log("SMOKE FAIL: timeout");
       app.exit(1);
-    }, 45_000);
+    }, 60_000);
     try {
       const info = (await mainWindow.webContents.executeJavaScript(
         `(async () => {
@@ -77,16 +91,36 @@ async function createWindow(serverUrl: string): Promise<void> {
             if (appVisible && pageChildren > 0) break;
             await sleep(500);
           }
+          // 4. 打开设置页，核对浏览器采集区出现且上报地址带真实端口（仅全新库首用流程要求）
+          let browserSection = false;
+          let reportAddrOk = false;
+          if (appVisible) {
+            const navBtn = document.querySelector('[data-page="settings"]');
+            if (navBtn) navBtn.click();
+            for (let i = 0; i < 40; i++) {
+              const card = document.querySelector("#browser-collect-card");
+              if (card) {
+                const loginBtn = document.querySelector("#browser-login-btn");
+                const addr = document.querySelector("#intake-report-url");
+                browserSection = !!loginBtn;
+                reportAddrOk = !!addr && String(addr.value || "").indexOf("http://127.0.0.1:") === 0 && String(addr.value).endsWith("/api/v1/intake/report");
+                if (browserSection && reportAddrOk) break;
+              }
+              await sleep(500);
+            }
+          }
           const h = await fetch("/api/v1/health").then(r => r.json()).catch(e => ({ error: String(e) }));
-          return { title: document.title, hasApp: !!document.querySelector("#app"), mode, submitted, appVisible, pageChildren, health: h };
+          return { title: document.title, hasApp: !!document.querySelector("#app"), mode, submitted, appVisible, pageChildren, health: h, browserSection, reportAddrOk };
         })()`,
       )) as Record<string, unknown>;
       clearTimeout(timer);
       log("smoke info", JSON.stringify(info));
+      const settingsOk = info.appVisible !== true || (info.browserSection === true && info.reportAddrOk === true);
       const ok =
         info.title &&
         info.hasApp === true &&
         (info.health as { ok?: boolean } | undefined)?.ok === true &&
+        settingsOk &&
         (info.mode === "login" ||
           (info.mode === "setup" &&
             info.submitted === true &&
@@ -116,6 +150,19 @@ function buildMenu(): void {
         {
           label: "检查更新",
           click: () => void checkForUpdates(true),
+        },
+        {
+          label: "打开快手登录窗口",
+          click: () => {
+            if (!collector) return;
+            void collector.showLoginWindow().catch((e: unknown) => {
+              void dialog.showMessageBox({
+                type: "warning",
+                title: "打开登录窗口",
+                message: `打开登录窗口失败：${e instanceof Error ? e.message : String(e)}`,
+              });
+            });
+          },
         },
         { type: "separator" },
         {
@@ -248,8 +295,13 @@ async function boot(): Promise<void> {
   setupUpdater();
 
   try {
-    running = await startLocalServer({ dataDir: dataDir(), port: 0 });
+    const port = resolvePort();
+    running = await startLocalServer({ dataDir: dataDir(), port, portFallback: port !== 0 });
     log("server up", running.url);
+    // 注册浏览器采集器：采集引擎与浏览器控制面都走它（窗口懒创建，不影响启动速度）
+    collector = new BrowserCollector({ dataDir: dataDir() });
+    running.env.BROWSER_FETCHER = collector;
+    running.env.BROWSER_CONTROL = collector;
   } catch (e) {
     log("server failed", e);
     await dialog.showErrorBox(
@@ -277,6 +329,11 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  if (collector) {
+    const c = collector;
+    collector = null;
+    c.dispose();
+  }
   if (running) {
     const r = running;
     running = null;

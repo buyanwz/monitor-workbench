@@ -2,7 +2,7 @@
 // 上报只存元数据与快照（file_status='missing'），不下载媒体——媒体由定时采集补齐，
 // 因为上报链路的播放链接需登录态，Worker 侧无权直接取用。置顶作品同样排除。
 
-import { authenticate, err, getSettingInt, json, nowMs, opLog, unauthorized, type Env } from "./db";
+import { authenticate, authenticateIntakeToken, err, getSettingInt, json, nowMs, opLog, unauthorized, type Env } from "./db";
 import { PLATFORMS } from "./accounts";
 import { DAY_MS, readJsonBody, reqInt, reqString } from "./util";
 
@@ -41,8 +41,26 @@ function validIntakeWork(w: unknown): IntakeWork | null {
   };
 }
 
-export async function handleIntakeReport(env: Env, req: Request): Promise<Response> {
+/** 上报令牌查看（仅会话鉴权后可见；令牌本身不能用来调这个接口）。 */
+export async function handleGetIntakeToken(env: Env, req: Request): Promise<Response> {
   if (!(await authenticate(env, req))) return unauthorized();
+  if (!env.INTAKE_TOKEN) return err("上报令牌未配置", 500);
+  return json({ ok: true, token: env.INTAKE_TOKEN });
+}
+
+/** 上报令牌轮换（仅会话鉴权；旧令牌立即失效）。环境变量模式下不可轮换。 */
+export async function handleRotateIntakeToken(env: Env, req: Request): Promise<Response> {
+  if (!(await authenticate(env, req))) return unauthorized();
+  if (!env.rotateIntakeToken) return err("当前为环境变量模式，不可轮换上报令牌", 400);
+  const token = await env.rotateIntakeToken();
+  await opLog(env.DB, "intake_token_rotate", "settings", null, "上报令牌已轮换（旧令牌立即失效）");
+  return json({ ok: true, token });
+}
+
+export async function handleIntakeReport(env: Env, req: Request): Promise<Response> {
+  // 鉴权两条路：会话令牌（界面手动上报）或上报专用令牌（扩展上报）；后者只在此接口有效
+  const session = await authenticate(env, req);
+  if (!session && !(await authenticateIntakeToken(env, req))) return unauthorized();
   const body = await readJsonBody(req);
   if (!body) return err("请求体不是合法 JSON", 400);
   const platform = reqString(body.platform, 32);

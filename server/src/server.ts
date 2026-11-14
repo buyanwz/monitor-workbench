@@ -11,15 +11,17 @@ import worker from "./index";
 import type { Env } from "./db";
 import { LocalDb } from "./localdb";
 import { LocalBucket } from "./localbucket";
-import { loadOrCreateSecrets } from "./secrets";
+import { loadOrCreateSecrets, rotateIntakeToken, secretsFromEnv } from "./secrets";
 import { applyMigrations } from "./migrate";
 import { createHttpServer } from "./nodehttp";
 import { startScheduler, type SchedulerHandle } from "./scheduler";
 
 export interface ServerOptions {
   dataDir: string;
-  port?: number; // 0 = 随机端口（Electron 默认）；CLI 默认 17881
+  port?: number; // 0 = 随机端口；Electron 默认 17881（固定端口 + 冲突兜底）；CLI 默认 17881
   host?: string;
+  /** 端口被占时顺延试下一个端口（最多 10 个），防启动被砖；随机端口（0）下无效。 */
+  portFallback?: boolean;
   noScheduler?: boolean; // 测试用：关调度器，手动驱动 cron
   migrationsDir?: string;
   staticDir?: string;
@@ -95,12 +97,21 @@ export async function startLocalServer(opts: ServerOptions): Promise<RunningServ
     BUCKET: bucket,
     LOGIN_STATE_KEY: secrets.loginStateKey,
     DOWNLOAD_SIGNING_KEY: secrets.downloadSigningKey,
+    INTAKE_TOKEN: secrets.intakeToken,
     MOCK_FETCHER: process.env.MONITOR_MOCK_FETCHER,
     TEST_MODE: process.env.MONITOR_TEST_MODE,
     TEST_QUOTA_BYTES: process.env.MONITOR_TEST_QUOTA_BYTES,
     TEST_MAX_FILE_BYTES: process.env.MONITOR_TEST_MAX_FILE_BYTES,
     ALLOWED_ORIGIN: process.env.MONITOR_ALLOWED_ORIGIN,
   };
+  // 文件模式才可轮换：轮换后内存里的 Env 令牌同步更新（同一 Env 对象处处共用）
+  if (!secretsFromEnv()) {
+    env.rotateIntakeToken = async () => {
+      const next = await rotateIntakeToken(dataDir);
+      env.INTAKE_TOKEN = next;
+      return next;
+    };
+  }
 
   const staticDir = await resolveStaticDir(opts.staticDir);
   const httpServer: Server = createHttpServer(
@@ -110,13 +121,44 @@ export async function startLocalServer(opts: ServerOptions): Promise<RunningServ
   );
 
   const host = opts.host ?? "127.0.0.1";
-  const port = opts.port ?? 0;
-  await new Promise<void>((resolve, reject) => {
-    httpServer.once("error", reject);
-    httpServer.listen(port, host, () => resolve());
-  });
-  const address = httpServer.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
+  const requestedPort = opts.port ?? 0;
+  const maxAttempts = opts.portFallback && requestedPort !== 0 ? 10 : 1;
+  let actualPort = requestedPort;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const tryPort = requestedPort === 0 ? 0 : requestedPort + attempt;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (e: unknown) => {
+          cleanup();
+          reject(e);
+        };
+        const onListening = () => {
+          cleanup();
+          resolve();
+        };
+        const cleanup = () => {
+          httpServer.removeListener("error", onError);
+          httpServer.removeListener("listening", onListening);
+        };
+        httpServer.once("error", onError);
+        httpServer.once("listening", onListening);
+        httpServer.listen(tryPort, host);
+      });
+      const address = httpServer.address();
+      actualPort = typeof address === "object" && address ? address.port : tryPort;
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      // 只有“端口被占”才顺延重试；其他错误（权限等）直接抛
+      if ((e as NodeJS.ErrnoException).code !== "EADDRINUSE" || requestedPort === 0) throw e;
+    }
+  }
+  if (lastError) throw lastError;
+  // 监听成功后常驻一个错误处理，防运行时 socket 错误无监听者导致进程崩溃
+  httpServer.on("error", (e: unknown) => console.error("http server error", e));
+  env.SERVER_PORT = actualPort;
 
   let scheduler: SchedulerHandle | null = null;
   if (!opts.noScheduler && process.env.MONITOR_NO_SCHEDULER !== "1") {

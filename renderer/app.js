@@ -56,6 +56,7 @@ var ACTION_LABEL = {
   login_state_update: "配置登录态", collect_trigger: "触发采集", collect_retry: "重试任务",
   backfill: "漏跑补采", intake: "手动上报", download: "下载", cleanup: "清理",
   backup: "备份导出", config_change: "修改配置",
+  browser_login_open: "打开快手登录窗口", intake_token_rotate: "轮换上报令牌",
 };
 var KNOWN_ACTIONS = Object.keys(ACTION_LABEL);
 
@@ -445,6 +446,9 @@ PAGE_LOADERS.accounts = async function () {
   page.innerHTML = '<div class="loading">正在加载账号…</div>';
   try {
     var accounts = await loadAccounts(true);
+    /* 浏览器登录状态（全局）：只作“采集登录来源”标注，与每账号的登录态徽标不混用；取不到就不标注 */
+    var browser = null;
+    try { browser = await api("GET", "/browser/status"); } catch (e) { browser = null; }
     var rows = accounts.map(function (a) {
       return "<tr>" +
         '<td><div class="cell-main">' + esc(a.name) + '</div><div class="cell-sub">' + esc(labelOf(PLATFORM_LABEL, a.platform)) + " · 账号 ID：" + esc(a.account_id) + "</div></td>" +
@@ -454,7 +458,8 @@ PAGE_LOADERS.accounts = async function () {
         '<td><span class="badge ' + badgeClassForHealth(a.health) + '">' + esc(labelOf(HEALTH_LABEL, a.health)) + "</span>" +
           (Number(a.fail_streak) > 0 ? '<div class="cell-sub">连续失败 ' + fmtCount(a.fail_streak) + " 次</div>" : "") + "</td>" +
         '<td><span class="badge ' + badgeClassForLoginState(a.login_state_status) + '">' + esc(labelOf(LOGIN_STATE_LABEL, a.login_state_status)) + "</span>" +
-          (a.login_state_updated_at ? '<div class="cell-sub">配置于 ' + fmtDateTime(a.login_state_updated_at) + "</div>" : "") + "</td>" +
+          (a.login_state_updated_at ? '<div class="cell-sub">配置于 ' + fmtDateTime(a.login_state_updated_at) + "</div>" : "") +
+          (browser && browser.available ? '<div class="cell-sub">采集登录：' + (browser.logged_in === true ? "浏览器已登录" : browser.logged_in === false ? "浏览器未登录" : "未知") + "</div>" : "") + "</td>" +
         '<td><div class="btn-row">' +
           '<button type="button" class="btn btn-sm" data-acc="edit" data-id="' + a.id + '">编辑</button>' +
           '<button type="button" class="btn btn-sm" data-acc="login-state" data-id="' + a.id + '">配置登录态</button>' +
@@ -470,7 +475,8 @@ PAGE_LOADERS.accounts = async function () {
         ? '<div class="empty">还没有账号，点右上角“新增账号”添加一个吧。</div>'
         : '<div class="table-wrap"><table><thead><tr><th>账号</th><th>主页</th><th>备注</th><th>状态</th><th>健康</th><th>登录态</th><th>操作</th></tr></thead><tbody>' + rows + "</tbody></table></div>") +
       "</div>" +
-      '<p class="notice-text">合规提示：仅采集已授权账号。登录态只显示“已配置 / 未配置 / 已失效”，原文永不回显；重新配置会覆盖旧的登录态。</p>';
+      '<p class="notice-text">合规提示：仅采集已授权账号。登录态只显示“已配置 / 未配置 / 已失效”，原文永不回显；重新配置会覆盖旧的登录态。' +
+      (browser && browser.available ? "浏览器采集模式下，采集用浏览器里的快手登录，见设置页「浏览器采集」。" : "") + "</p>";
   } catch (err) {
     page.innerHTML = errorBoxHtml(err.message);
   }
@@ -750,7 +756,7 @@ async function onTasksClick(e) {
       var t = data.task;
       openModal(
         '<div class="modal-head"><h2>任务详情</h2><button type="button" class="icon-btn" data-close aria-label="关闭">✕</button></div>' +
-        (t.needs_review ? '<div class="alert alert-warn">待人工核对：这次采集返回的数据里没有置顶标记，置顶排除无法确认，请人工看一下入库的作品。</div>' : "") +
+        (t.needs_review ? '<div class="alert alert-warn">待人工核对：没拿到置顶标记，未入库——这次采集返回的数据里没有置顶字段，无法确认哪些是置顶作品，所以整批都没有入库。等置顶标记确认后，重新采集即可。</div>' : "") +
         '<dl class="kv">' +
         "<dt>账号</dt><dd>" + esc(t.account_name || ("账号 " + t.account_id)) + "</dd>" +
         "<dt>平台</dt><dd>" + esc(labelOf(PLATFORM_LABEL, t.platform)) + "</dd>" +
@@ -1165,6 +1171,7 @@ PAGE_LOADERS.settings = async function () {
       '<label class="field"><span>登录态提醒天数（1～90 天）</span><input type="number" name="login_state_warn_days" min="1" max="90" step="1" required value="' + settingsOriginal.login_state_warn_days + '"></label>' +
       '<label class="field"><span>每天采集时间（北京时间，固定不可改）</span><input value="' + esc(String(s.collect_hour === undefined ? 8 : s.collect_hour)) + ':00" disabled></label>' +
       '<div class="btn-row"><button type="submit" class="btn btn-primary">保存配置</button></div></form></div>' +
+      '<div class="card" id="browser-collect-card"><h2>浏览器采集</h2><div class="loading">正在加载…</div></div>' +
       '<div class="card"><div class="card-head"><h2>存储占用</h2><button type="button" class="btn" data-setting="run-cleanup">立即清理过期文件</button></div>' +
       '<div id="cleanup-result"></div><div id="storage-box"><div class="loading">正在加载…</div></div></div>' +
       '<div class="card"><h2>清理记录</h2><div id="cleanup-box"><div class="loading">正在加载…</div></div></div>' +
@@ -1191,10 +1198,143 @@ PAGE_LOADERS.settings = async function () {
     renderStorageUsage();
     renderCleanupRecords();
     renderLogs();
+    renderBrowserSection();
   } catch (err) {
     page.innerHTML = errorBoxHtml(err.message);
   }
 };
+/* 复制文本：优先剪贴板 API，不可用时回退到选中复制 */
+async function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+}
+/* 设置页「浏览器采集」区：登录状态 + 登录窗口按钮 + 上报地址与令牌 + 当前端口 */
+async function renderBrowserSection() {
+  var card = $("#browser-collect-card");
+  if (!card) return;
+  try {
+    var st = await api("GET", "/browser/status");
+    if (!st.available) {
+      card.innerHTML = "<h2>浏览器采集</h2>" +
+        '<p class="form-hint">当前为命令行模式，没有内嵌浏览器，浏览器采集不可用。</p>';
+      return;
+    }
+    card.innerHTML =
+      "<h2>浏览器采集</h2>" +
+      '<dl class="kv">' +
+      "<dt>浏览器登录状态</dt><dd id=\"browser-login-badge\">—</dd>" +
+      "<dt>上次截获时间</dt><dd id=\"browser-last-capture\">—</dd>" +
+      "<dt>本地服务端口</dt><dd id=\"browser-port\">—</dd>" +
+      "</dl>" +
+      '<p class="form-hint">点下面的按钮打开快手登录窗口，在里面登录快手（验证码也在里面手动处理）。登录态存在程序自己的浏览器分区里，重启程序还在。每天 8:00 采集时，程序用这个登录态打开账号主页截取数据。</p>' +
+      '<div class="btn-row"><button type="button" class="btn btn-primary" id="browser-login-btn">打开快手登录窗口</button>' +
+      '<button type="button" class="btn" id="browser-status-refresh">刷新状态</button></div>' +
+      '<div class="alert alert-error" id="browser-section-error" hidden></div>' +
+      '<label class="field"><span>扩展上报地址（给扩展填这个地址）</span>' +
+      '<div class="input-row"><input id="intake-report-url" readonly value=""><button type="button" class="btn btn-sm" id="copy-report-url">复制</button></div></label>' +
+      '<label class="field"><span>上报令牌（只给上报接口用，不等于登录口令）</span>' +
+      '<div class="input-row"><input id="intake-token-field" type="password" readonly value="" autocomplete="off" spellcheck="false"><button type="button" class="btn btn-sm" id="toggle-token-visible">显示</button><button type="button" class="btn btn-sm" id="copy-intake-token">复制</button><button type="button" class="btn btn-sm btn-danger" id="rotate-intake-token">轮换</button></div></label>' +
+      '<p class="form-hint">令牌只在上报时作身份凭证。轮换后旧令牌立即失效，扩展里要同步换新的。</p>';
+    var tokenValue = "";
+    var errBox = $("#browser-section-error", card);
+    function showBrowserError(msg) { errBox.textContent = msg; errBox.hidden = false; }
+    function fillStatus(s) {
+      var badge = $("#browser-login-badge", card);
+      if (badge) {
+        badge.innerHTML = s.logged_in === true
+          ? '<span class="badge badge-green">已登录</span>'
+          : s.logged_in === false
+            ? '<span class="badge badge-gray">未登录</span>'
+            : '<span class="badge badge-gray">未知</span>';
+      }
+      var last = $("#browser-last-capture", card);
+      if (last) last.textContent = fmtDateTime(s.last_capture_at);
+      var portEl = $("#browser-port", card);
+      var port = s.port || (window.location.port ? Number(window.location.port) : null);
+      if (portEl) portEl.textContent = port ? String(port) : "—";
+      var addr = $("#intake-report-url", card);
+      if (addr) addr.value = port ? "http://127.0.0.1:" + port + "/api/v1/intake/report" : "";
+    }
+    fillStatus(st);
+    try {
+      var tk = await api("GET", "/intake/token");
+      tokenValue = tk.token || "";
+      var tf = $("#intake-token-field", card);
+      if (tf) tf.value = tokenValue;
+    } catch (err) { showBrowserError("上报令牌取不到：" + err.message); }
+    $("#browser-login-btn", card).addEventListener("click", function () {
+      var btn = this;
+      errBox.hidden = true;
+      withBusy(btn, async function () {
+        try {
+          await api("POST", "/browser/show-login", {});
+          toast("登录窗口已打开，请在里面登录快手，登完点“刷新状态”", "success");
+          /* 登录是人工操作，15 秒后自动刷新一次状态，免得用户反复点 */
+          setTimeout(function () {
+            if (!document.body.contains(card)) return;
+            api("GET", "/browser/status").then(fillStatus).catch(function () {});
+          }, 15000);
+        } catch (err) { showBrowserError(err.message); }
+      });
+    });
+    $("#browser-status-refresh", card).addEventListener("click", function () {
+      var btn = this;
+      errBox.hidden = true;
+      withBusy(btn, async function () {
+        try { fillStatus(await api("GET", "/browser/status")); }
+        catch (err) { showBrowserError(err.message); }
+      });
+    });
+    $("#copy-report-url", card).addEventListener("click", async function () {
+      try { await copyText($("#intake-report-url", card).value); toast("上报地址已复制", "success"); }
+      catch (err) { showBrowserError("复制失败：" + err.message); }
+    });
+    $("#toggle-token-visible", card).addEventListener("click", function () {
+      var tf = $("#intake-token-field", card);
+      var showing = tf.type === "text";
+      tf.type = showing ? "password" : "text";
+      this.textContent = showing ? "显示" : "隐藏";
+    });
+    $("#copy-intake-token", card).addEventListener("click", async function () {
+      if (!tokenValue) { showBrowserError("上报令牌还没取到，请稍后再试"); return; }
+      try { await copyText(tokenValue); toast("上报令牌已复制", "success"); }
+      catch (err) { showBrowserError("复制失败：" + err.message); }
+    });
+    $("#rotate-intake-token", card).addEventListener("click", async function () {
+      var ok = await confirmDialog({
+        title: "轮换上报令牌",
+        bodyHtml: "<p>轮换后旧令牌立即失效，扩展里填的旧令牌就上报不上来了，要同步换新的。确定轮换吗？</p>",
+        confirmText: "轮换", danger: true,
+      });
+      if (!ok) return;
+      var btn = this;
+      errBox.hidden = true;
+      await withBusy(btn, async function () {
+        try {
+          var data = await api("POST", "/intake/token/rotate", {});
+          tokenValue = data.token || "";
+          var tf = $("#intake-token-field", card);
+          if (tf) { tf.value = tokenValue; tf.type = "password"; }
+          var tg = $("#toggle-token-visible", card);
+          if (tg) tg.textContent = "显示";
+          toast("上报令牌已轮换，记得同步换扩展里的令牌", "success");
+        } catch (err) { showBrowserError(err.message); }
+      });
+    });
+  } catch (err) {
+    card.innerHTML = "<h2>浏览器采集</h2>" + errorBoxHtml(err.message);
+  }
+}
 async function onSettingsSubmit(e) {
   e.preventDefault();
   var form = e.target;

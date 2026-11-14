@@ -90,9 +90,17 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-async function updateHealthOnFailure(env: Env, account: AccountRow, code: ErrorCode): Promise<void> {
+async function updateHealthOnFailure(env: Env, account: AccountRow, code: ErrorCode, browserMode = false): Promise<void> {
   const now = nowMs();
   if (code === "login_expired") {
+    if (browserMode) {
+      // 浏览器模式：登录态在浏览器分区里，不动账号的 login_state_status（那是另一套登录态）
+      await env.DB.prepare("UPDATE monitor_account SET health = 'invalid', fail_streak = fail_streak + 1, updated_at = ? WHERE id = ?")
+        .bind(now, account.id)
+        .run();
+      await notify(env.DB, "account_invalid", `账号 ${account.name} 登录态失效`, "采集失败：浏览器里还没登录快手，请在设置页打开快手登录窗口登录。", account.id);
+      return;
+    }
     await env.DB.prepare(
       "UPDATE monitor_account SET health = 'invalid', fail_streak = fail_streak + 1, login_state_status = 'expired', updated_at = ? WHERE id = ?",
     )
@@ -281,6 +289,8 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
     .bind(task.account_id)
     .first<AccountRow>();
   const startedAt = task.started_at ?? nowMs();
+  const fetcher = selectFetcher(env);
+  const browserMode = fetcher.usesBrowserLogin === true;
 
   const finishFailed = async (code: ErrorCode, message: string, needsReview: boolean, punishAccount: boolean) => {
     const now = nowMs();
@@ -307,7 +317,7 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
           needsReview ? "返回数据无置顶字段，已标记待人工核对，未入库。" : `失败原因：${message}`,
           account.id,
         );
-        if (punishAccount) await updateHealthOnFailure(env, account, code);
+        if (punishAccount) await updateHealthOnFailure(env, account, code, browserMode);
       }
     }
   };
@@ -323,21 +333,31 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
     return;
   }
 
-  // 1. 解密登录态（失败 → login_expired，设计第六节第 1 步）
-  let loginState: string;
-  try {
-    if (!account.login_state_enc) throw new Error("未配置登录态");
-    if (!env.LOGIN_STATE_KEY) throw new Error("服务端未配置登录态加密密钥");
-    loginState = await decryptLoginState(account.login_state_enc, env.LOGIN_STATE_KEY);
-  } catch {
-    await finishFailed("login_expired", "登录态失效或未配置，请重新配置登录态", false, true);
-    return;
+  // 1. 登录态门（设计第六节第 1 步）
+  // 浏览器模式：登录态在浏览器分区 cookie 里，不走 login_state_enc 解密，改查分区登录状态；
+  // 直调/mock 模式：解密 login_state_enc（失败 → login_expired）。
+  let loginState = "";
+  if (browserMode) {
+    const loggedIn = fetcher.checkBrowserLogin ? await fetcher.checkBrowserLogin() : false;
+    if (!loggedIn) {
+      await finishFailed("login_expired", "浏览器里还没登录快手，请在设置页打开快手登录窗口登录", false, true);
+      return;
+    }
+  } else {
+    try {
+      if (!account.login_state_enc) throw new Error("未配置登录态");
+      if (!env.LOGIN_STATE_KEY) throw new Error("服务端未配置登录态加密密钥");
+      loginState = await decryptLoginState(account.login_state_enc, env.LOGIN_STATE_KEY);
+    } catch {
+      await finishFailed("login_expired", "登录态失效或未配置，请重新配置登录态", false, true);
+      return;
+    }
   }
 
   // 2. 取作品列表（120 秒超时 → network）
   let result;
   try {
-    result = await withTimeout(selectFetcher(env).fetchWorks(account, loginState), COLLECT_TIMEOUT_MS);
+    result = await withTimeout(fetcher.fetchWorks(account, loginState), COLLECT_TIMEOUT_MS);
   } catch (e) {
     const { code, message } = classifyError(e);
     await finishFailed(code, message, false, true);

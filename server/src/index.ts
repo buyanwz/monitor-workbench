@@ -16,11 +16,12 @@ import {
 } from "./accounts";
 import { handleChangePassword, handleLogin, handleLogout, handleMe, handleSetup, handleSetupStatus } from "./auth";
 import { handleExportBackup, snapshotBackup } from "./backup";
+import { handleBrowserStatus, handleShowLogin } from "./browser";
 import { handleRunCleanup, handleListCleanupRecords, handleStorageUsage, runCleanup } from "./cleanup";
 import { ensureDailyTasks, processPendingTasks } from "./collect";
 import { handleDashboard } from "./dashboard";
 import { authenticate, clientIp, err, json, rateLimit, unauthorized, type Env } from "./db";
-import { handleIntakeReport } from "./intake";
+import { handleGetIntakeToken, handleIntakeReport, handleRotateIntakeToken } from "./intake";
 import { handleListNotifications, handleMarkAllRead, handleMarkRead } from "./notify";
 import { handleGetSettings, handleListOperationLogs, handleUpdateSettings } from "./settings";
 import { handleBackfill, handleGetTask, handleListTasks, handleRetryTask, handleTriggerCollect } from "./tasks";
@@ -72,7 +73,11 @@ const API_DOC = {
     "GET  /api/v1/operation-logs (Bearer)",
     "GET  /api/v1/dashboard (Bearer)",
     "GET  /api/v1/backup/export (Bearer)",
-    "POST /api/v1/intake/report (Bearer)",
+    "POST /api/v1/intake/report (Bearer 会话或上报令牌)",
+    "GET  /api/v1/intake/token (Bearer)",
+    "POST /api/v1/intake/token/rotate (Bearer)",
+    "GET  /api/v1/browser/status (Bearer)",
+    "POST /api/v1/browser/show-login (Bearer)",
   ],
 };
 
@@ -206,6 +211,10 @@ export default {
       else if (path === "/api/v1/dashboard" && method === "GET") res = await handleDashboard(env, req);
       else if (path === "/api/v1/backup/export" && method === "GET") res = await handleExportBackup(env, req);
       else if (path === "/api/v1/intake/report" && method === "POST") res = await handleIntakeReport(env, req);
+      else if (path === "/api/v1/intake/token" && method === "GET") res = await handleGetIntakeToken(env, req);
+      else if (path === "/api/v1/intake/token/rotate" && method === "POST") res = await handleRotateIntakeToken(env, req);
+      else if (path === "/api/v1/browser/status" && method === "GET") res = await handleBrowserStatus(env, req);
+      else if (path === "/api/v1/browser/show-login" && method === "POST") res = await handleShowLogin(env, req);
       else if (path === "/api/v1/_test/run-cron" && method === "POST") res = await handleTestRunCron(env, req);
       else if (path === "/api/v1/_test/issue-token" && method === "POST") res = await handleTestIssueToken(env, req);
       else {

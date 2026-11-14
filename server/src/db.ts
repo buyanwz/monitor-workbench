@@ -3,6 +3,13 @@
 
 import type { LocalDatabase } from "./localdb";
 import type { LocalBucket } from "./localbucket";
+import type { PlatformFetcher } from "./fetcher";
+
+/** 浏览器采集控制面（Electron 主进程注入；CLI 环境下 Env 里没有该对象）。 */
+export interface BrowserControl {
+  getStatus(): Promise<{ loggedIn: boolean; lastCaptureAt: number | null }>;
+  showLoginWindow(): Promise<void>;
+}
 
 export interface Env {
   DB: LocalDatabase;
@@ -14,6 +21,16 @@ export interface Env {
   TEST_QUOTA_BYTES?: string;
   TEST_MAX_FILE_BYTES?: string;
   ALLOWED_ORIGIN?: string;
+  /** 浏览器采集器（仅 Electron 注入；CLI/测试环境无此项，走 mock 或未实现占位）。 */
+  BROWSER_FETCHER?: PlatformFetcher;
+  /** 浏览器采集控制面（仅 Electron 注入）。 */
+  BROWSER_CONTROL?: BrowserControl;
+  /** 本地服务实际监听端口（固定端口兜底后可能与请求端口不同；上报地址显示用）。 */
+  SERVER_PORT?: number;
+  /** 扩展上报专用令牌（只对 /intake/report 有效，不等于会话登录）。 */
+  INTAKE_TOKEN?: string;
+  /** 轮换上报令牌（环境变量模式下无此项，不可轮换）。 */
+  rotateIntakeToken?: () => Promise<string>;
 }
 
 export const SESSION_TTL_MS = 30 * 24 * 3600 * 1000; // 会话 30 天，滑动续期
@@ -63,6 +80,20 @@ export async function authenticate(env: Env, req: Request): Promise<{ tokenHash:
 
 export function unauthorized(): Response {
   return err("未登录或会话已过期，请重新登录", 401);
+}
+
+/**
+ * 上报令牌鉴权：只比对 SHA-256 哈希，不滑动续期、不产生会话。
+ * 仅供 /intake/report 使用——令牌在其他接口上一律无效（不是登录凭证）。
+ */
+export async function authenticateIntakeToken(env: Env, req: Request): Promise<boolean> {
+  const token = bearerToken(req);
+  const expected = env.INTAKE_TOKEN;
+  if (!token || !expected) return false;
+  const { sha256Hex } = await import("./crypto");
+  const a = await sha256Hex(token);
+  const b = await sha256Hex(expected);
+  return a === b;
 }
 
 // ---- 脚手架级内存限流（仅挡单机滥用；生产限流走 Cloudflare 规则，部署前补，见 README） ----

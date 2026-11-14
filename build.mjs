@@ -33,6 +33,12 @@ async function main() {
       entryPoints: [path.join(root, "electron/main.ts")],
       outfile: path.join(root, "dist/electron/main.cjs"),
     });
+    // 采集窗口 preload（MAIN world 注入脚本；与 main.cjs 同目录，打包时随 dist/electron/** 带走）
+    await esbuild.build({
+      ...common,
+      entryPoints: [path.join(root, "electron/collect-preload.ts")],
+      outfile: path.join(root, "dist/electron/collect-preload.cjs"),
+    });
   }
   // 迁移文件随 dist 走（开发运行用；打包后走 extraResources → resources/migrations）
   await fs.mkdir(path.join(root, "dist/migrations"), { recursive: true });
