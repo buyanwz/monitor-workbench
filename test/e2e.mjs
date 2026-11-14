@@ -182,7 +182,7 @@ async function main() {
   console.log("== 账号管理 ==");
   let normalAccountId = 0;
   {
-    const badPlatform = await req("POST", "/api/v1/accounts", { platform: "douyin", name: "x", home_url: "https://x", account_id: "a1" }, token);
+    const badPlatform = await req("POST", "/api/v1/accounts", { platform: "bilibili", name: "x", home_url: "https://x", account_id: "a1" }, token);
     check("不支持的平台被拒", badPlatform.status === 400, JSON.stringify(badPlatform.data));
     const missing = await req("POST", "/api/v1/accounts", { platform: "kuaishou", home_url: "https://x", account_id: "a1" }, token);
     check("缺名称被拒", missing.status === 400, JSON.stringify(missing.data));

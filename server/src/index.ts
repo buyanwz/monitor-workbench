@@ -77,7 +77,7 @@ const API_DOC = {
     "GET  /api/v1/intake/token (Bearer)",
     "POST /api/v1/intake/token/rotate (Bearer)",
     "GET  /api/v1/browser/status (Bearer)",
-    "POST /api/v1/browser/show-login (Bearer)",
+    "POST /api/v1/browser/show-login {platform?} (Bearer)",
   ],
 };
 

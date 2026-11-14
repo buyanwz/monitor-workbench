@@ -47,11 +47,14 @@ const st = await req("GET", "/api/v1/browser/status", undefined, token);
 check("浏览器状态接口可调", st.status === 200 && st.data.ok === true, st.text);
 check("CLI 模式 available=false", st.data.available === false, st.text);
 check("CLI 模式 logged_in=null", st.data.logged_in === null, st.text);
+check("CLI 模式 platforms=null", st.data.platforms === null, st.text);
 check("状态里带实际端口", st.data.port === 17892, st.text);
 
 // 2. 登录窗：CLI 模式报 503
 const sl = await req("POST", "/api/v1/browser/show-login", {}, token);
 check("CLI 模式弹登录窗报 503", sl.status === 503, sl.text);
+const slDy = await req("POST", "/api/v1/browser/show-login", { platform: "douyin" }, token);
+check("CLI 模式带 platform 弹登录窗报 503", slDy.status === 503, slDy.text);
 
 // 3. 未登录调新接口一律 401
 const stNoAuth = await req("GET", "/api/v1/browser/status");
@@ -98,6 +101,44 @@ const tkWithToken = await req("GET", "/api/v1/intake/token", undefined, newToken
 check("上报令牌不能用来查看令牌", tkWithToken.status === 401, tkWithToken.text);
 const repSession = await req("POST", "/api/v1/intake/report", payload, token);
 check("会话令牌仍可上报（去重更新）", repSession.status === 200 && repSession.data.updated === 1, repSession.text);
+
+// 6. v0.3.0 账号链接归一：抖音短链拒绝、小红书去 token、三平台白名单
+const dyShort = await req("POST", "/api/v1/accounts", {
+  platform: "douyin",
+  name: "短链账号",
+  home_url: "https://v.douyin.com/abc123/",
+  account_id: "dy_short",
+  remark: null,
+}, token);
+check("抖音短链建账号报 400", dyShort.status === 400 && String(dyShort.data.error || "").includes("请贴完整主页链接"), dyShort.text);
+const xhsTok = await req("POST", "/api/v1/accounts", {
+  platform: "xiaohongshu",
+  name: "小红书账号",
+  home_url: "https://www.xiaohongshu.com/user/profile/24charuserid1234567890?xsec_token=tok123&xsec_source=pc_user",
+  account_id: "xhs_tok",
+  remark: null,
+}, token);
+check(
+  "小红书链接去 token 后入库",
+  (xhsTok.status === 200 || xhsTok.status === 201) && !String(xhsTok.data.account.home_url).includes("xsec_token") && String(xhsTok.data.account.home_url).includes("/user/profile/24charuserid1234567890"),
+  xhsTok.text,
+);
+const dyFull = await req("POST", "/api/v1/accounts", {
+  platform: "douyin",
+  name: "抖音账号",
+  home_url: "https://www.douyin.com/user/MS4wLjABAAAAtest",
+  account_id: "dy_full",
+  remark: null,
+}, token);
+check("抖音完整链接建账号成功", (dyFull.status === 200 || dyFull.status === 201) && dyFull.data.ok === true, dyFull.text);
+const badPlat = await req("POST", "/api/v1/accounts", {
+  platform: "bilibili",
+  name: "未知平台",
+  home_url: "https://space.bilibili.com/1",
+  account_id: "bili1",
+  remark: null,
+}, token);
+check("未知平台建账号报 400", badPlat.status === 400, badPlat.text);
 
 console.log(`\n== 结果：通过 ${passed}，失败 ${failed} ==`);
 process.exit(failed === 0 ? 0 : 1);

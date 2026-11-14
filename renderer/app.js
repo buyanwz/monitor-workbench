@@ -29,7 +29,7 @@ function labelOf(map, value, fallback) {
   if (value === null || value === undefined || value === "") return fallback || "—";
   return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : String(value);
 }
-var PLATFORM_LABEL = { kuaishou: "快手" };
+var PLATFORM_LABEL = { kuaishou: "快手", douyin: "抖音", xiaohongshu: "小红书" };
 var ACCOUNT_STATUS_LABEL = { active: "启用", disabled: "停用" };
 var LOGIN_STATE_LABEL = { ok: "已配置", missing: "未配置", expired: "已失效" };
 var HEALTH_LABEL = { normal: "正常", invalid: "失效", risk: "风控", failing: "连续失败" };
@@ -44,6 +44,7 @@ var NOTIFY_TYPE_LABEL = {
   failing_streak: "连续失败", storage_warning: "存储不足警告", storage_critical: "存储严重不足",
   file_too_large: "文件过大", task_timeout: "任务超时",
   login_expiry_warning: "登录态过期提醒", cleanup_done: "清理完成",
+  collect_skipped: "跳过图文作品",
 };
 var FILE_STATUS_LABEL = { ok: "文件齐全", missing: "文件缺失" };
 var KIND_LABEL = { video: "视频", cover: "封面", txt: "文案", zip: "压缩包" };
@@ -56,7 +57,7 @@ var ACTION_LABEL = {
   login_state_update: "配置登录态", collect_trigger: "触发采集", collect_retry: "重试任务",
   backfill: "漏跑补采", intake: "手动上报", download: "下载", cleanup: "清理",
   backup: "备份导出", config_change: "修改配置",
-  browser_login_open: "打开快手登录窗口", intake_token_rotate: "轮换上报令牌",
+  browser_login_open: "打开浏览器登录窗口", intake_token_rotate: "轮换上报令牌",
 };
 var KNOWN_ACTIONS = Object.keys(ACTION_LABEL);
 
@@ -446,9 +447,15 @@ PAGE_LOADERS.accounts = async function () {
   page.innerHTML = '<div class="loading">正在加载账号…</div>';
   try {
     var accounts = await loadAccounts(true);
-    /* 浏览器登录状态（全局）：只作“采集登录来源”标注，与每账号的登录态徽标不混用；取不到就不标注 */
+    /* 浏览器登录状态（按平台）：只作“采集登录来源”标注，与每账号的登录态徽标不混用；取不到就不标注 */
     var browser = null;
     try { browser = await api("GET", "/browser/status"); } catch (e) { browser = null; }
+    function browserLoginText(platform) {
+      if (!browser || !browser.available) return "";
+      var st = (browser.platforms && browser.platforms[platform]) || null;
+      var logged = st ? st.logged_in : (platform === "kuaishou" ? browser.logged_in : null);
+      return '<div class="cell-sub">采集登录：' + (logged === true ? "浏览器已登录" : logged === false ? "浏览器未登录" : "未知") + "</div>";
+    }
     var rows = accounts.map(function (a) {
       return "<tr>" +
         '<td><div class="cell-main">' + esc(a.name) + '</div><div class="cell-sub">' + esc(labelOf(PLATFORM_LABEL, a.platform)) + " · 账号 ID：" + esc(a.account_id) + "</div></td>" +
@@ -459,7 +466,7 @@ PAGE_LOADERS.accounts = async function () {
           (Number(a.fail_streak) > 0 ? '<div class="cell-sub">连续失败 ' + fmtCount(a.fail_streak) + " 次</div>" : "") + "</td>" +
         '<td><span class="badge ' + badgeClassForLoginState(a.login_state_status) + '">' + esc(labelOf(LOGIN_STATE_LABEL, a.login_state_status)) + "</span>" +
           (a.login_state_updated_at ? '<div class="cell-sub">配置于 ' + fmtDateTime(a.login_state_updated_at) + "</div>" : "") +
-          (browser && browser.available ? '<div class="cell-sub">采集登录：' + (browser.logged_in === true ? "浏览器已登录" : browser.logged_in === false ? "浏览器未登录" : "未知") + "</div>" : "") + "</td>" +
+          browserLoginText(a.platform) + "</td>" +
         '<td><div class="btn-row">' +
           '<button type="button" class="btn btn-sm" data-acc="edit" data-id="' + a.id + '">编辑</button>' +
           '<button type="button" class="btn btn-sm" data-acc="login-state" data-id="' + a.id + '">配置登录态</button>' +
@@ -476,7 +483,7 @@ PAGE_LOADERS.accounts = async function () {
         : '<div class="table-wrap"><table><thead><tr><th>账号</th><th>主页</th><th>备注</th><th>状态</th><th>健康</th><th>登录态</th><th>操作</th></tr></thead><tbody>' + rows + "</tbody></table></div>") +
       "</div>" +
       '<p class="notice-text">合规提示：仅采集已授权账号。登录态只显示“已配置 / 未配置 / 已失效”，原文永不回显；重新配置会覆盖旧的登录态。' +
-      (browser && browser.available ? "浏览器采集模式下，采集用浏览器里的快手登录，见设置页「浏览器采集」。" : "") + "</p>";
+      (browser && browser.available ? "浏览器采集模式下，采集用浏览器里对应平台的登录，见设置页「浏览器采集」。" : "") + "</p>";
   } catch (err) {
     page.innerHTML = errorBoxHtml(err.message);
   }
@@ -545,7 +552,7 @@ function openAccountForm(acc) {
     '<div class="alert alert-error" id="account-form-error" hidden></div>' +
     '<label class="field"><span>平台</span>' +
       (isNew
-        ? '<select name="platform"><option value="kuaishou">快手</option></select>'
+        ? '<select name="platform"><option value="kuaishou">快手</option><option value="douyin">抖音</option><option value="xiaohongshu">小红书</option></select>'
         : '<input value="' + esc(labelOf(PLATFORM_LABEL, acc.platform)) + '" disabled>') +
     "</label>" +
     '<label class="field"><span>账号名称</span><input name="name" maxlength="100" required value="' + esc(isNew ? "" : acc.name) + '" placeholder="例如：某某账号"></label>' +
@@ -1218,7 +1225,12 @@ async function copyText(text) {
   document.execCommand("copy");
   ta.remove();
 }
-/* 设置页「浏览器采集」区：登录状态 + 登录窗口按钮 + 上报地址与令牌 + 当前端口 */
+/* 设置页「浏览器采集」区：按平台分块（登录状态 + 登录窗口按钮）+ 共用的上报地址与令牌 + 当前端口 */
+var BROWSER_PLATFORMS = [
+  { platform: "kuaishou", label: "快手", badgeId: "browser-login-badge", lastId: "browser-last-capture", btnId: "browser-login-btn" },
+  { platform: "douyin", label: "抖音", badgeId: "browser-login-badge-douyin", lastId: "browser-last-capture-douyin", btnId: "browser-login-btn-douyin" },
+  { platform: "xiaohongshu", label: "小红书", badgeId: "browser-login-badge-xiaohongshu", lastId: "browser-last-capture-xiaohongshu", btnId: "browser-login-btn-xiaohongshu" },
+];
 async function renderBrowserSection() {
   var card = $("#browser-collect-card");
   if (!card) return;
@@ -1229,16 +1241,22 @@ async function renderBrowserSection() {
         '<p class="form-hint">当前为命令行模式，没有内嵌浏览器，浏览器采集不可用。</p>';
       return;
     }
+    var blocks = BROWSER_PLATFORMS.map(function (p) {
+      return '<div class="browser-platform"><h3>' + p.label + "</h3>" +
+        '<dl class="kv">' +
+        "<dt>登录状态</dt><dd id=\"" + p.badgeId + "\">—</dd>" +
+        "<dt>上次截获时间</dt><dd id=\"" + p.lastId + "\">—</dd>" +
+        "</dl>" +
+        '<div class="btn-row"><button type="button" class="btn btn-primary" id="' + p.btnId + '">打开' + p.label + '登录窗口</button></div></div>';
+    }).join("");
     card.innerHTML =
       "<h2>浏览器采集</h2>" +
+      blocks +
       '<dl class="kv">' +
-      "<dt>浏览器登录状态</dt><dd id=\"browser-login-badge\">—</dd>" +
-      "<dt>上次截获时间</dt><dd id=\"browser-last-capture\">—</dd>" +
       "<dt>本地服务端口</dt><dd id=\"browser-port\">—</dd>" +
       "</dl>" +
-      '<p class="form-hint">点下面的按钮打开快手登录窗口，在里面登录快手（验证码也在里面手动处理）。登录态存在程序自己的浏览器分区里，重启程序还在。每天 8:00 采集时，程序用这个登录态打开账号主页截取数据。</p>' +
-      '<div class="btn-row"><button type="button" class="btn btn-primary" id="browser-login-btn">打开快手登录窗口</button>' +
-      '<button type="button" class="btn" id="browser-status-refresh">刷新状态</button></div>' +
+      '<p class="form-hint">点各平台的按钮打开对应登录窗口，在里面登录（验证码也在里面手动处理）。登录态存在程序自己的浏览器分区里，各平台互不干扰，重启程序还在。每天 8:00 采集时，程序用这个登录态打开账号主页截取数据。</p>' +
+      '<div class="btn-row"><button type="button" class="btn" id="browser-status-refresh">刷新状态</button></div>' +
       '<div class="alert alert-error" id="browser-section-error" hidden></div>' +
       '<label class="field"><span>扩展上报地址（给扩展填这个地址）</span>' +
       '<div class="input-row"><input id="intake-report-url" readonly value=""><button type="button" class="btn btn-sm" id="copy-report-url">复制</button></div></label>' +
@@ -1249,16 +1267,21 @@ async function renderBrowserSection() {
     var errBox = $("#browser-section-error", card);
     function showBrowserError(msg) { errBox.textContent = msg; errBox.hidden = false; }
     function fillStatus(s) {
-      var badge = $("#browser-login-badge", card);
-      if (badge) {
-        badge.innerHTML = s.logged_in === true
-          ? '<span class="badge badge-green">已登录</span>'
-          : s.logged_in === false
-            ? '<span class="badge badge-gray">未登录</span>'
-            : '<span class="badge badge-gray">未知</span>';
-      }
-      var last = $("#browser-last-capture", card);
-      if (last) last.textContent = fmtDateTime(s.last_capture_at);
+      BROWSER_PLATFORMS.forEach(function (p) {
+        var pst = (s.platforms && s.platforms[p.platform]) || null;
+        var logged = pst ? pst.logged_in : (p.platform === "kuaishou" ? s.logged_in : null);
+        var last = pst ? pst.last_capture_at : (p.platform === "kuaishou" ? s.last_capture_at : null);
+        var badge = $("#" + p.badgeId, card);
+        if (badge) {
+          badge.innerHTML = logged === true
+            ? '<span class="badge badge-green">已登录</span>'
+            : logged === false
+              ? '<span class="badge badge-gray">未登录</span>'
+              : '<span class="badge badge-gray">未知</span>';
+        }
+        var lastEl = $("#" + p.lastId, card);
+        if (lastEl) lastEl.textContent = fmtDateTime(last);
+      });
       var portEl = $("#browser-port", card);
       var port = s.port || (window.location.port ? Number(window.location.port) : null);
       if (portEl) portEl.textContent = port ? String(port) : "—";
@@ -1272,19 +1295,21 @@ async function renderBrowserSection() {
       var tf = $("#intake-token-field", card);
       if (tf) tf.value = tokenValue;
     } catch (err) { showBrowserError("上报令牌取不到：" + err.message); }
-    $("#browser-login-btn", card).addEventListener("click", function () {
-      var btn = this;
-      errBox.hidden = true;
-      withBusy(btn, async function () {
-        try {
-          await api("POST", "/browser/show-login", {});
-          toast("登录窗口已打开，请在里面登录快手，登完点“刷新状态”", "success");
-          /* 登录是人工操作，15 秒后自动刷新一次状态，免得用户反复点 */
-          setTimeout(function () {
-            if (!document.body.contains(card)) return;
-            api("GET", "/browser/status").then(fillStatus).catch(function () {});
-          }, 15000);
-        } catch (err) { showBrowserError(err.message); }
+    BROWSER_PLATFORMS.forEach(function (p) {
+      $("#" + p.btnId, card).addEventListener("click", function () {
+        var btn = this;
+        errBox.hidden = true;
+        withBusy(btn, async function () {
+          try {
+            await api("POST", "/browser/show-login", { platform: p.platform });
+            toast("登录窗口已打开，请在里面登录" + p.label + "，登完点“刷新状态”", "success");
+            /* 登录是人工操作，15 秒后自动刷新一次状态，免得用户反复点 */
+            setTimeout(function () {
+              if (!document.body.contains(card)) return;
+              api("GET", "/browser/status").then(fillStatus).catch(function () {});
+            }, 15000);
+          } catch (err) { showBrowserError(err.message); }
+        });
       });
     });
     $("#browser-status-refresh", card).addEventListener("click", function () {

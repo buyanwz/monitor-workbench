@@ -12,17 +12,21 @@
 
 1. **电脑关机或程序没开时，8:00 定时任务跑不了。** 程序内调度器只在程序运行时工作；
    下次打开程序时会补建当天的采集任务，过去日子的漏跑用界面「漏跑补采」手动补指定日期。
-2. **浏览器采集已接进 v0.2.0，但置顶排除尚未取证，采回来的批次目前不入库。**
-   内嵌浏览器（持久分区存登录态）打开账号主页，debugger 协议截获页面自己发出的
-   `/rest/v/profile/feed` 返回正文，映射后走同一采集引擎；登录窗口在设置页打开，
-   验证码用户手动处理。快手接口有页面签名墙，服务端直调已证实调不通（见扩展拆解结论），
+2. **浏览器采集已接通三平台，但快手与抖音的置顶排除尚未取证，这两平台采回来的批次目前不入库。**
+   内嵌浏览器（每平台独立持久分区存登录态）打开账号主页，debugger 协议截获页面自己发出的
+   作品列表请求返回正文，映射后走同一采集引擎；登录窗口在设置页按平台打开，
+   验证码用户手动处理。三平台接口都有页面签名墙，服务端直调已证实调不通，
    所以主路是截获、不是直调，签名器借用只作后备探测、不用它发请求。
-   置顶字段至今无证据（扩展代码里 0 命中），按规格一律 `has_pinned_field=false`，
-   批次标 `needs_review`、整批不入库——这是正确的保护行为，不是 bug。
+   置顶字段取证状态：
+   - 快手：无证据（扩展代码里 0 命中），`has_pinned_field=false`，批次标 `needs_review`、整批不入库；
+   - 抖音：无证据（扩展代码里 0 命中），同快手；
+   - 小红书：`interact_info.sticky` 已证实（扩展分页逻辑明确排除 sticky 笔记），
+     `has_pinned_field=true`，直接排除置顶后取最新 5 条。
    取证办法：截获的原始返回存 `<数据目录>/captures/`（每账号最近 5 份，含字段清单），
    在真机上抓一条真实返回、人工判定哪个字段是置顶标记后，才能把排除逻辑接上。
-   另有 3 项只能真机验证：打开主页是否触发 feed 请求（R3）、真实登录态寿命（R5）、
-   Windows 下分区/debugger/端口行为（R9）。扩展上报与手动上报仍可用（上报令牌见设置页）。
+   另有 4 项只能真机验证：打开主页是否触发作品列表请求（R3，三平台各验）、真实登录态寿命（R5）、
+   Windows 下分区/debugger/端口行为（R9）、小红书游标/话题字段与视频地址双路径实测。
+   扩展上报与手动上报仍可用（上报令牌见设置页）。
 3. **界面是重写的。** 新台（Muse artifact，slug `jian-kong-zhang-hao`）的源码无法通过
    artifact 工具取出（fullstack artifact 没有源码导出接口，export 只支持 web_static，
    且该 artifact 在构建目录里不可见），因此界面按设计文档第五节＋方案 A 选配重写，
@@ -42,8 +46,9 @@ Electron 主进程（Node 24，无子进程）
   │    ├─ R2 兼容层 → 本地文件 → <数据目录>/files/（key 即相对路径）
   │    └─ /ui/ 同源托管前端静态文件（无跨域问题）
   ├─ 程序内调度器（30 秒 tick，北京时间）：8:00 建任务、8:30 补采、3:00 清理＋快照、每分钟处理任务
-  ├─ 浏览器采集器（隐藏窗口，persist:monitor-kuaishou 分区）：debugger 截获 feed 返回正文，
-  │   媒体下载带分区 cookie；登录窗口平时隐藏，设置页/菜单可弹出
+  ├─ 浏览器采集器（每平台独立隐藏窗口与持久分区：monitor-kuaishou / monitor-douyin / monitor-xiaohongshu）：
+  │   debugger 截获作品列表返回正文（小红书另有 __INITIAL_STATE__ 补充捕获），
+  │   媒体下载合并三平台分区 cookie；登录窗口平时隐藏，设置页/菜单按平台弹出
   └─ 窗口（sandbox + contextIsolation，无 IPC、无 Node 集成）＋ electron-updater 自动更新
 ```
 
@@ -54,9 +59,9 @@ Electron 主进程（Node 24，无子进程）
 <数据目录>/
   monitor.db      本地库（与 Cloudflare 版同一 schema，migrations/0001_init.sql）
   files/          视频/封面/ZIP/备份（key 即相对路径，如 works/kuaishou/<id>/video.mp4）
-  captures/       截获的 feed 原始返回 + 字段清单（取证置顶字段用，每账号最近 5 份）
+  captures/       截获的作品列表原始返回 + 字段清单（取证置顶字段用，每账号最近 5 份）
   secrets.json    本机密钥（首次启动自动生成，POSIX 0600；永不打印、永不进日志）
-  Partitions/     内嵌浏览器分区（含快手登录 cookie，重启保留）
+  Partitions/     内嵌浏览器分区（每平台一个，含各平台登录 cookie，重启保留）
 ```
 
 ## 复用与改动清单
@@ -111,6 +116,32 @@ e2e 测试断言（152 条）与上限专项断言（11 条）。
 - `renderer/`：设置页「浏览器采集」区（登录状态/打开登录窗/上报地址与令牌/当前端口）、
   账号页采集登录标注、任务中心 needs_review 文案。
 
+**v0.3.0 改动（抖音与小红书浏览器采集）：**
+- `electron/feed-map-common.ts`（新）：三平台 mapper 共用纯函数（记录/数字/时间戳归一）。
+- `electron/feed-map-kuaishou.ts`（新，快手映射原样搬运）：`feed-map.ts` 改为兼容转发。
+- `electron/feed-map-douyin.ts`（新）：aweme/post 映射（AQ/TQ 媒体提取原样、whale 风控分类、
+  图文跳过计数）；置顶无证据，`has_pinned_field=false`。
+- `electron/feed-map-xiaohongshu.ts`（新）：user_posted 映射（cGe/T7 双路径视频提取、
+  `interact_info.sticky` 置顶、登录门禁检测、图文跳过计数）；`has_pinned_field=true`。
+- `electron/browser-collect.ts`：拆平台配置表（分区/登录地址/截获标记/mapper/置顶策略），
+  每平台独立窗口与分区，状态接口按平台返回，下载合并三平台分区 cookie，
+  小红书 `__INITIAL_STATE__` 补充捕获（形状校验、失败静默降级），抖音短链拒绝、
+  小红书链接去 token（与服务端双重把关），截获存档含平台与跳过数。
+- `electron/collect-preload.ts`：fetch/XHR 包装的截获标记扩为三平台。
+- `electron/main.ts`：菜单三个平台登录窗口；冒烟核对三个登录按钮。
+- `server/src/fetcher.ts`：`selectFetcher` 按平台分发（未接通平台走未实现占位），
+  `FetchResult` 加跳过数，平台标签表。
+- `server/src/accounts.ts`：平台白名单扩为三平台；建/改账号时抖音短链拒绝、
+  小红书链接去 xsec 参数。
+- `server/src/collect.ts`：登录门按账号平台查对应分区；失败文案按平台；图文跳过
+  记通知（`collect_skipped`，一天内同一账号一次）。
+- `server/src/browser.ts`/`db.ts`：状态接口加 `platforms`（旧字段不变），登录窗接口
+  接受可选 `platform`；通知类型加 `collect_skipped`。
+- `renderer/`：设置页浏览器采集区按平台分块，账号页采集登录标注按平台，
+  新增账号可选三平台，通知/日志标签补新项。
+- 夹具说明：新 mapper 测试的夹具形状只用探针报告里有扩展代码证据的字段，
+  注明源自扩展代码、非真实截获；真实字段形状以真机取证为准。
+
 **未复用（Cloudflare 专属，已废弃）：** wrangler.toml、Worker 绑定、D1/R2 远端资源。
 D1 库已建但本方案不用云端，留着不花钱。
 
@@ -130,9 +161,9 @@ npm run start            # 只起本地服务（CLI，端口 MONITOR_PORT，默�
 `MONITOR_SMOKE=1` 冒烟：Electron 无头跑完整首用流程（设口令 → 进应用 → 看板渲染 →
 设置页浏览器采集区核对）。
 手动跑的脚本（不进 `npm test`）：`test/port-fallback.sh`（端口冲突兜底 2 条）、
-`test/run-browser-routes.sh`（浏览器/上报令牌接口 20 条）、
-`test/browser-collect-verify.mjs`（探针式验证 43 条：映射单测＋本地页截获端到端＋
-采集引擎全链路；只连 127.0.0.1，绝不访问快手）。
+`test/run-browser-routes.sh`（浏览器/上报令牌/账号链接接口 26 条）、
+`test/browser-collect-verify.mjs`（探针式验证 92 条：三平台映射单测＋本地页截获端到端＋
+采集引擎全链路＋SSR 补充捕获；只连 127.0.0.1，绝不访问任何平台）。
 
 ## 打包与发版
 
@@ -158,9 +189,10 @@ Windows runner（与 script-workbench 同款工作流）。沙箱里的半成品
 2. 补程序图标 `build/icon.ico`，并在 electron-builder.yml 的 `win.icon` 与 `nsis.*Icon` 配上。
 3. 真机（Windows）验证：安装、首次打开设口令、导入/上报一条作品、预览播放、下载 ZIP、
    8:00 定时任务（或手动触发）、重启后数据与登录态、自动更新（发两个版本实测）。
-4. 浏览器采集真机验证（4 项，沙箱无法验证）：快手真实登录后打开账号主页是否触发
-   feed 请求；真实登录态能维持多久；从 `captures/` 存档的真实返回里判定置顶字段名、
-   接上置顶排除；Windows 下分区/debugger/端口兜底行为与 Linux 一致。
+4. 浏览器采集真机验证（沙箱无法验证）：三平台各在真实登录后打开账号主页，确认是否触发
+   作品列表请求；真实登录态能维持多久；从 `captures/` 存档的真实返回里判定快手/抖音的
+   置顶字段名、接上置顶排除；核对小红书 `sticky` 字段确实出现、游标/话题字段、视频地址
+   双路径哪条真实出现；抖音风控决策值实测；Windows 下分区/debugger/端口兜底行为与 Linux 一致。
 5. 未来新增迁移文件时放 `server/migrations/`，按文件名顺序执行（`_migrations` 记账）。
 
 ## 安全口径

@@ -13,8 +13,41 @@ import {
 } from "./db";
 import { optString, readJsonBody, reqString } from "./util";
 
-export const PLATFORMS = ["kuaishou"] as const; // v1 只做快手（设计 A1）；后续平台加白名单即可
+export const PLATFORMS = ["kuaishou", "douyin", "xiaohongshu"] as const; // v0.3.0 起三平台（与 fetcher.ts 的 BROWSER_PLATFORMS 保持一致）
 export const HEALTH_VALUES = ["normal", "invalid", "risk", "failing"] as const;
+
+/**
+ * 主页链接校验与归一（v0.3.0 已定保守默认）：
+ * - 抖音短链（v.douyin.com）不接受：报“请贴完整主页链接”，不静默解析；
+ * - 小红书链接去 xsec_token/xsec_source 参数再存（干净 URL，由页面自行补 token）；
+ * - 其他平台原样存（仅去首尾空白）。
+ */
+export function normalizeHomeUrl(platform: string, homeUrl: string): { url: string } | { error: string } {
+  const trimmed = homeUrl.trim();
+  if (platform === "douyin") {
+    let host = "";
+    try {
+      host = new URL(trimmed).hostname.toLowerCase();
+    } catch {
+      host = "";
+    }
+    if (host === "v.douyin.com" || host.endsWith(".v.douyin.com") || /(^|[/?#])v\.douyin\.com\//i.test(trimmed)) {
+      return { error: "请贴完整主页链接（短链暂不支持）" };
+    }
+    return { url: trimmed };
+  }
+  if (platform === "xiaohongshu") {
+    try {
+      const u = new URL(trimmed);
+      u.searchParams.delete("xsec_token");
+      u.searchParams.delete("xsec_source");
+      return { url: u.toString() };
+    } catch {
+      return { url: trimmed }; // 解析失败时原样存，不新增拒绝口径
+    }
+  }
+  return { url: trimmed };
+}
 
 export interface AccountRow {
   id: number;
@@ -66,11 +99,13 @@ export async function handleCreateAccount(env: Env, req: Request): Promise<Respo
   if (!name) return err("账号名称不能为空", 400);
   if (!homeUrl) return err("主页链接不能为空", 400);
   if (!accountId) return err("平台账号ID不能为空", 400);
+  const normalized = normalizeHomeUrl(platform, homeUrl);
+  if ("error" in normalized) return err(normalized.error, 400);
   const now = nowMs();
   const res = await env.DB.prepare(
     "INSERT INTO monitor_account (platform, name, home_url, account_id, remark, status, login_state_status, health, fail_streak, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'missing', 'normal', 0, ?, ?)",
   )
-    .bind(platform, name, homeUrl, accountId, remark, now, now)
+    .bind(platform, name, normalized.url, accountId, remark, now, now)
     .run()
     .catch((e: unknown) => {
       if (String(e).includes("UNIQUE")) return null;
@@ -125,13 +160,19 @@ export async function handleUpdateAccount(env: Env, req: Request, id: number): P
   if (!(await authenticate(env, req))) return unauthorized();
   const body = await readJsonBody(req);
   if (!body) return err("请求体不是合法 JSON", 400);
-  const existing = await env.DB.prepare("SELECT id FROM monitor_account WHERE id = ?").bind(id).first<{ id: number }>();
+  const existing = await env.DB.prepare("SELECT id, platform FROM monitor_account WHERE id = ?").bind(id).first<{ id: number; platform: string }>();
   if (!existing) return err("账号不存在", 404);
   const name = body.name === undefined ? undefined : reqString(body.name, 100);
   const homeUrl = body.home_url === undefined ? undefined : reqString(body.home_url, 500);
   const remark = body.remark === undefined ? undefined : optString(body.remark, 500);
   if (body.name !== undefined && !name) return err("账号名称不能为空", 400);
   if (body.home_url !== undefined && !homeUrl) return err("主页链接不能为空", 400);
+  let normalizedHomeUrl: string | undefined;
+  if (homeUrl) {
+    const normalized = normalizeHomeUrl(existing.platform, homeUrl);
+    if ("error" in normalized) return err(normalized.error, 400);
+    normalizedHomeUrl = normalized.url;
+  }
   if (body.remark !== undefined && body.remark !== null && body.remark !== "" && remark === null) {
     return err("备注过长", 400);
   }
@@ -143,7 +184,7 @@ export async function handleUpdateAccount(env: Env, req: Request, id: number): P
   }
   if (homeUrl !== undefined) {
     sets.push("home_url = ?");
-    binds.push(homeUrl);
+    binds.push(normalizedHomeUrl);
   }
   if (remark !== undefined) {
     sets.push("remark = ?");

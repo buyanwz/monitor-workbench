@@ -1,6 +1,7 @@
 // 采集器接口：平台取数与媒体下载的可替换边界。
-// 生产快手采集器尚未实现（待用户经安全通道提供登录态后，另行研究平台接口并实现）；
-// 当前默认实现只抛错，绝不访问真实平台接口。MOCK_FETCHER=1 时启用 mock 采集器（假数据，
+// 生产采集走 Electron 内嵌浏览器截获（electron/browser-collect.ts，三平台配置表）；
+// 服务端直调平台接口的路已被签名墙证实走不通，绝不直调。CLI/无 Electron 环境下
+// 默认实现只抛错，绝不访问真实平台接口。MOCK_FETCHER=1 时启用 mock 采集器（假数据，
 // 不出本地），供 e2e 验证采集流程。mock 场景由账号的平台账号ID（account_id）选择。
 
 export type ErrorCode = "login_expired" | "captcha" | "rate_limit" | "banned" | "deleted" | "network" | "other";
@@ -45,6 +46,19 @@ export interface FetchResult {
   works: FetchedWork[];
   /** 平台返回是否带置顶字段。false 时整批不入库、任务标 needs_review。 */
   has_pinned_field: boolean;
+  /** 本批跳过的图文条数（无视频文件，按规则不入库；采集引擎据此如实通知）。 */
+  skippedCount?: number;
+  /** 跳过条目的说明（如“图文作品”），供通知文案用。 */
+  skippedNote?: string;
+}
+
+/** 浏览器采集已接通的平台（与 accounts.ts 的 PLATFORMS 白名单保持一致）。 */
+export const BROWSER_PLATFORMS: readonly string[] = ["kuaishou", "douyin", "xiaohongshu"];
+
+export const PLATFORM_LABELS: Record<string, string> = { kuaishou: "快手", douyin: "抖音", xiaohongshu: "小红书" };
+
+export function platformLabel(platform: string): string {
+  return PLATFORM_LABELS[platform] ?? platform;
 }
 
 export interface MediaBytes {
@@ -60,17 +74,17 @@ export interface PlatformFetcher {
   download(url: string): Promise<MediaBytes>;
   /** 浏览器采集器为 true：登录态在浏览器分区 cookie 里，不走 login_state_enc 解密门。 */
   readonly usesBrowserLogin?: boolean;
-  /** 浏览器采集器：分区内是否存在平台 cookie（登录状态启发式判断）。 */
-  checkBrowserLogin?(): Promise<boolean>;
+  /** 浏览器采集器：指定平台的分区内是否存在平台 cookie（登录状态启发式判断）。 */
+  checkBrowserLogin?(platform: string): Promise<boolean>;
 }
 
 /** 生产占位采集器：未实现，抛错；绝不访问真实平台接口。 */
 export const unimplementedFetcher: PlatformFetcher = {
   async fetchWorks(): Promise<FetchResult> {
-    throw new FetcherError("other", "快手采集器尚未实现（需平台接口研究与登录态接入，见 README 未决问题）");
+    throw new FetcherError("other", "该平台的采集器尚未实现（浏览器采集未接入，见 README 未决问题）");
   },
   async download(): Promise<MediaBytes> {
-    throw new FetcherError("other", "快手采集器尚未实现");
+    throw new FetcherError("other", "该平台的采集器尚未实现");
   },
 };
 
@@ -174,12 +188,18 @@ export const mockFetcher: PlatformFetcher = {
 };
 
 /**
- * 按环境选择采集器：MOCK_FETCHER=1 用 mock；Electron 注入了浏览器采集器则用它；
- * 否则用未实现占位（抛错，不访问真实接口）。CLI/无 Electron 环境永远走不到浏览器分支，
- * 绝不静默降级。
+ * 按环境与平台选择采集器：MOCK_FETCHER=1 用 mock；Electron 注入了浏览器采集器且
+ * 平台已接通则用它；平台未接通（或无 Electron 环境）用未实现占位（抛错，不访问
+ * 真实接口）。platform 缺省时只做环境选择（下载路径用，与平台无关），绝不静默降级。
  */
-export function selectFetcher(env: { MOCK_FETCHER?: string; BROWSER_FETCHER?: PlatformFetcher }): PlatformFetcher {
+export function selectFetcher(
+  env: { MOCK_FETCHER?: string; BROWSER_FETCHER?: PlatformFetcher },
+  platform?: string,
+): PlatformFetcher {
   if (env.MOCK_FETCHER === "1") return mockFetcher;
-  if (env.BROWSER_FETCHER) return env.BROWSER_FETCHER;
+  if (env.BROWSER_FETCHER) {
+    if (platform === undefined || BROWSER_PLATFORMS.includes(platform)) return env.BROWSER_FETCHER;
+    return unimplementedFetcher;
+  }
   return unimplementedFetcher;
 }

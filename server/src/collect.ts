@@ -16,6 +16,7 @@ import {
 import {
   NON_RETRYABLE,
   classifyError,
+  platformLabel,
   selectFetcher,
   type ErrorCode,
   type FetchedWork,
@@ -95,10 +96,11 @@ async function updateHealthOnFailure(env: Env, account: AccountRow, code: ErrorC
   if (code === "login_expired") {
     if (browserMode) {
       // 浏览器模式：登录态在浏览器分区里，不动账号的 login_state_status（那是另一套登录态）
+      const label = platformLabel(account.platform);
       await env.DB.prepare("UPDATE monitor_account SET health = 'invalid', fail_streak = fail_streak + 1, updated_at = ? WHERE id = ?")
         .bind(now, account.id)
         .run();
-      await notify(env.DB, "account_invalid", `账号 ${account.name} 登录态失效`, "采集失败：浏览器里还没登录快手，请在设置页打开快手登录窗口登录。", account.id);
+      await notify(env.DB, "account_invalid", `账号 ${account.name} 登录态失效`, `采集失败：浏览器里还没登录${label}，请在设置页打开${label}登录窗口登录。`, account.id);
       return;
     }
     await env.DB.prepare(
@@ -289,7 +291,7 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
     .bind(task.account_id)
     .first<AccountRow>();
   const startedAt = task.started_at ?? nowMs();
-  const fetcher = selectFetcher(env);
+  const fetcher = selectFetcher(env, account?.platform);
   const browserMode = fetcher.usesBrowserLogin === true;
 
   const finishFailed = async (code: ErrorCode, message: string, needsReview: boolean, punishAccount: boolean) => {
@@ -338,9 +340,10 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
   // 直调/mock 模式：解密 login_state_enc（失败 → login_expired）。
   let loginState = "";
   if (browserMode) {
-    const loggedIn = fetcher.checkBrowserLogin ? await fetcher.checkBrowserLogin() : false;
+    const label = platformLabel(account.platform);
+    const loggedIn = fetcher.checkBrowserLogin ? await fetcher.checkBrowserLogin(account.platform) : false;
     if (!loggedIn) {
-      await finishFailed("login_expired", "浏览器里还没登录快手，请在设置页打开快手登录窗口登录", false, true);
+      await finishFailed("login_expired", `浏览器里还没登录${label}，请在设置页打开${label}登录窗口登录`, false, true);
       return;
     }
   } else {
@@ -395,6 +398,18 @@ export async function processTask(env: Env, taskId: number): Promise<void> {
     .bind(status, collected, finishedAt, task.id)
     .run();
   await updateHealthOnSuccess(env, account.id);
+  // 图文跳过如实通知：跳过数由采集器上报（图文无视频文件，按规则不入库），一天内同一账号只报一次
+  const skipped = result.skippedCount ?? 0;
+  if (skipped > 0) {
+    await notifyOnce(
+      env.DB,
+      "collect_skipped",
+      `账号 ${account.name} 采集跳过 ${skipped} 条图文作品`,
+      `本次采集遇到 ${skipped} 条${result.skippedNote ?? "图文作品"}，没有视频文件，按当前规则不入库。`,
+      account.id,
+      DAY_MS,
+    );
+  }
   void startedAt;
 }
 

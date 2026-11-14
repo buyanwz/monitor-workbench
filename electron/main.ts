@@ -101,8 +101,10 @@ async function createWindow(serverUrl: string): Promise<void> {
               const card = document.querySelector("#browser-collect-card");
               if (card) {
                 const loginBtn = document.querySelector("#browser-login-btn");
+                const loginBtnDy = document.querySelector("#browser-login-btn-douyin");
+                const loginBtnXhs = document.querySelector("#browser-login-btn-xiaohongshu");
                 const addr = document.querySelector("#intake-report-url");
-                browserSection = !!loginBtn;
+                browserSection = !!(loginBtn && loginBtnDy && loginBtnXhs);
                 reportAddrOk = !!addr && String(addr.value || "").indexOf("http://127.0.0.1:") === 0 && String(addr.value).endsWith("/api/v1/intake/report");
                 if (browserSection && reportAddrOk) break;
               }
@@ -141,6 +143,17 @@ async function createWindow(serverUrl: string): Promise<void> {
   }
 }
 
+function openLoginWindow(platform: string, label: string): void {
+  if (!collector) return;
+  void collector.showLoginWindow(platform).catch((e: unknown) => {
+    void dialog.showMessageBox({
+      type: "warning",
+      title: "打开登录窗口",
+      message: `打开${label}登录窗口失败：${e instanceof Error ? e.message : String(e)}`,
+    });
+  });
+}
+
 function buildMenu(): void {
   const isMac = process.platform === "darwin";
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -153,16 +166,15 @@ function buildMenu(): void {
         },
         {
           label: "打开快手登录窗口",
-          click: () => {
-            if (!collector) return;
-            void collector.showLoginWindow().catch((e: unknown) => {
-              void dialog.showMessageBox({
-                type: "warning",
-                title: "打开登录窗口",
-                message: `打开登录窗口失败：${e instanceof Error ? e.message : String(e)}`,
-              });
-            });
-          },
+          click: () => openLoginWindow("kuaishou", "快手"),
+        },
+        {
+          label: "打开抖音登录窗口",
+          click: () => openLoginWindow("douyin", "抖音"),
+        },
+        {
+          label: "打开小红书登录窗口",
+          click: () => openLoginWindow("xiaohongshu", "小红书"),
         },
         { type: "separator" },
         {

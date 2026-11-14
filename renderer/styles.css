@@ -252,3 +252,9 @@ td .btn-row { flex-wrap: nowrap; }
   .me-label { display: none; }
   .page-head { flex-direction: column; gap: 4px; align-items: flex-start; }
 }
+
+/* 设置页浏览器采集区：每平台一块，块间分隔 */
+.browser-platform { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.browser-platform:first-of-type { padding-top: 0; }
+.browser-platform:last-of-type { border-bottom: none; }
+.browser-platform .kv { margin-bottom: 8px; }

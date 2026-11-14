@@ -1,10 +1,13 @@
 // 采集窗口 preload：在页面脚本跑之前，把一段脚本插进页面主世界（MAIN world）。
 // 主世界脚本只做两件后备/补充的事，绝不改页面行为、绝不主动发请求：
-//   1. 签名器陷阱（后备，P3）：在 Object.prototype 上装 encrypter/encoder setter，
-//      等页面给某对象赋值签名器时捕获并上报状态；60 秒未捕获自动拆除。v0.2.0
-//      不用借到的签名器发任何请求（主路是 debugger 截获），陷阱只作状态探测。
-//   2. fetch/XHR 包装（补充，P2）：只捕获 /rest/v/profile/feed 响应正文，
-//      经 CustomEvent 交给 preload 转发给主进程；debugger 截获不到时作补充。
+//   1. 签名器陷阱（后备，P3，仅快手页面有意义）：在 Object.prototype 上装
+//      encrypter/encoder setter，等页面给某对象赋值签名器时捕获并上报状态；
+//      60 秒未捕获自动拆除。在其他平台页面上陷阱不会触发、无害。
+//      v0.2.0 起不用借到的签名器发任何请求（主路是 debugger 截获），陷阱只作状态探测。
+//   2. fetch/XHR 包装（补充，P2）：只捕获三平台的作品列表请求正文
+//      （快手 /rest/v/profile/feed、抖音 /aweme/v1/web/aweme/post、
+//      小红书 /api/sns/web/v1/user_posted），经 CustomEvent 交给 preload
+//      转发给主进程；debugger 截获不到时作补充。
 // preload 跑在 documentElement 出现之前，必须用 MutationObserver 等 <html> 插入
 // 后再注入（探针实测坑：直接访问 documentElement 会让整个 preload 加载失败）。
 // preload 与页面主世界是两个隔离世界：包装必须发生在主世界里（插 <script> 标签），
@@ -17,7 +20,7 @@ const INJECTED_SCRIPT = `(function () {
   try {
     if (window.__monitorCollectInstalled) return;
     window.__monitorCollectInstalled = true;
-    var FEED_MARK = "/rest/v/profile/feed";
+    var FEED_MARKS = ["/rest/v/profile/feed", "/aweme/v1/web/aweme/post", "/api/sns/web/v1/user_posted"];
     function emit(detail) {
       try { window.dispatchEvent(new CustomEvent("__monitor-collect", { detail: detail })); } catch (e) {}
     }
@@ -58,7 +61,11 @@ const INJECTED_SCRIPT = `(function () {
       })(trapProp);
     }
     // ---- 2. fetch / XHR 包装（只捕获作品列表请求正文） ----
-    function isFeedUrl(u) { return typeof u === "string" && u.indexOf(FEED_MARK) !== -1; }
+    function isFeedUrl(u) {
+      if (typeof u !== "string") return false;
+      for (var i = 0; i < FEED_MARKS.length; i++) { if (u.indexOf(FEED_MARKS[i]) !== -1) return true; }
+      return false;
+    }
     try {
       var origFetch = window.fetch;
       if (origFetch) {

@@ -5,10 +5,25 @@ import type { LocalDatabase } from "./localdb";
 import type { LocalBucket } from "./localbucket";
 import type { PlatformFetcher } from "./fetcher";
 
+/** 单平台的浏览器登录状态（控制面按平台返回）。 */
+export interface BrowserPlatformStatus {
+  loggedIn: boolean;
+  lastCaptureAt: number | null;
+}
+
 /** 浏览器采集控制面（Electron 主进程注入；CLI 环境下 Env 里没有该对象）。 */
 export interface BrowserControl {
-  getStatus(): Promise<{ loggedIn: boolean; lastCaptureAt: number | null }>;
-  showLoginWindow(): Promise<void>;
+  /**
+   * 状态：loggedIn/lastCaptureAt 是快手（首平台）的旧字段语义，保持不变；
+   * platforms 为每平台的状态（快手/抖音/小红书）。
+   */
+  getStatus(): Promise<{
+    loggedIn: boolean;
+    lastCaptureAt: number | null;
+    platforms: Record<string, BrowserPlatformStatus>;
+  }>;
+  /** 弹出指定平台的登录窗口（缺省快手，保持旧调用兼容）。 */
+  showLoginWindow(platform?: string): Promise<void>;
 }
 
 export interface Env {
@@ -139,7 +154,8 @@ export type NotificationType =
   | "file_too_large"
   | "task_timeout"
   | "login_expiry_warning"
-  | "cleanup_done";
+  | "cleanup_done"
+  | "collect_skipped";
 
 export async function notify(
   db: LocalDatabase,

@@ -6,8 +6,10 @@ import { app, BrowserWindow, ipcMain, session } from "electron";
 import * as http from "node:http";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { BrowserCollector, COLLECT_PARTITION } from "../electron/browser-collect";
+import { BrowserCollector, COLLECT_PARTITION, DOUYIN_PARTITION, XIAOHONGSHU_PARTITION, configForPlatform } from "../electron/browser-collect";
 import { collectFieldInventory, parseFeedResponse } from "../electron/feed-map";
+import { collectDouyinFieldInventory, parseDouyinResponse } from "../electron/feed-map-douyin";
+import { collectXiaohongshuFieldInventory, parseXiaohongshuResponse } from "../electron/feed-map-xiaohongshu";
 import { FetcherError } from "../server/src/fetcher";
 import { startLocalServer } from "../server/src/server";
 
@@ -121,6 +123,149 @@ fetch("/rest/v/profile/feed", { method: "POST", headers: {"Content-Type": "appli
 
 const LOGIN_HTML = `<html><head><title>verify login</title></head><body>login page</body></html>`;
 
+// ---- 两平台 mapper 夹具（形状只用探针报告里有扩展代码证据的字段；夹具源自扩展代码分析，非真实截获） ----
+const DOUYIN_BODY = JSON.stringify({
+  aweme_list: [
+    {
+      aweme_id: "dy_w1",
+      desc: "抖音作品一",
+      media_type: 0,
+      create_time: 1790000003,
+      text_extra: [
+        { hashtag_name: "话题甲", type: 1 },
+        { hashtag_name: "不是话题", type: 0 },
+        { hashtag_name: "", type: 1 },
+      ],
+      statistics: { digg_count: 321, play_count: 1000, comment_count: 5 },
+      video: {
+        duration: 15000,
+        raw_cover: { url_list: [] },
+        cover: { url_list: ["http://127.0.0.1:PORT/dy_cover1.jpg"] },
+        origin_cover: { url_list: ["http://127.0.0.1:PORT/dy_origin.jpg"] },
+        play_addr: {
+          url_list: [
+            "https://v26-web.douyinvod.com/skip1.mp4",
+            "https://x-webf.douyinvod.com/skip2.mp4",
+            "http://127.0.0.1:PORT/dy_high1.mp4",
+          ],
+          uri: "v123",
+          data_size: 1234,
+        },
+      },
+    },
+    {
+      aweme_id: "dy_w2",
+      desc: "只有 uri 回退",
+      create_time: 1790000004,
+      statistics: { digg_count: 10 },
+      video: {
+        cover: { url_list: ["http://127.0.0.1:PORT/dy_cover2.jpg"] },
+        play_addr: { url_list: ["https://v26-web.douyinvod.com/only.mp4"], uri: "v999" },
+      },
+    },
+    {
+      aweme_id: "dy_g1",
+      desc: "图文作品",
+      media_type: 2,
+      create_time: 1790000005,
+      statistics: { digg_count: 1 },
+      images: [{ url_list: ["http://127.0.0.1:PORT/img1.jpeg"] }],
+    },
+    { aweme_id: "dy_g2", desc: "图文作品42", media_type: 42, create_time: 1790000006, statistics: { digg_count: 2 } },
+    { desc: "没有 ID 的条目", statistics: { digg_count: 1 } },
+    { aweme_id: "dy_w3", create_time: 1790000007, statistics: {}, video: {} },
+  ],
+  max_cursor: 12345,
+  has_more: true,
+}).replace(/PORT/g, String(PORT));
+
+const XHS_BODY = JSON.stringify({
+  success: true,
+  code: 1000,
+  msg: "ok",
+  data: {
+    notes: [
+      {
+        note_id: "xhs_n1",
+        display_title: "小红书笔记一",
+        type: "video",
+        time: 1790000000000,
+        interact_info: { liked_count: 55, collected_count: 3, comment_count: 2, share_count: 1, sticky: true },
+        image_list: [{ url: "http://127.0.0.1:PORT/xhs_cover1.jpg", url_default: "http://127.0.0.1:PORT/xhs_cover1d.jpg" }],
+        video: { consumer: { origin_video_key: "key-abc-123" } },
+        user: { user_id: "24charuserid1234567890", nickname: "博主", xsec_token: "tok123", xsec_source: "pc_user" },
+      },
+      {
+        note_id: "xhs_n2",
+        display_title: "清晰度表笔记",
+        type: "video",
+        time: 1790000001000,
+        interact_info: { liked_count: 10, sticky: false },
+        image_list: [{ url_default: "http://127.0.0.1:PORT/xhs_cover2.jpg" }],
+        video: {
+          media: {
+            stream: {
+              h264: [
+                { master_url: "http://127.0.0.1:PORT/xhs_720.mp4", width: 720, height: 1280, format: "mp4", size: 100, audio_bitrate: 128 },
+                { master_url: "http://127.0.0.1:PORT/xhs_1080.mp4", width: 1080, height: 1920, format: "mp4", size: 200, audio_bitrate: 128 },
+                { master_url: "http://127.0.0.1:PORT/xhs_wm.mp4", width: 1080, height: 1920, format: "mp4", size: 300, stream_desc: "WM_test", audio_bitrate: 128 },
+              ],
+            },
+          },
+        },
+      },
+      {
+        note_id: "xhs_g1",
+        display_title: "图文笔记",
+        type: "image",
+        time: 1790000002000,
+        interact_info: { liked_count: 1 },
+        image_list: [{ url: "http://127.0.0.1:PORT/xhs_img.jpg" }],
+      },
+      {
+        note_id: "xhs_n3",
+        title: "只有 title 字段",
+        time: 1790000003000,
+        interact_info: { liked_count: 7 },
+        image_list: [],
+        video: {},
+      },
+    ],
+  },
+}).replace(/PORT/g, String(PORT));
+
+// SSR 补充捕获夹具：单条有效笔记（形状同 user_posted 的 note 对象）
+const XHS_SSR_NOTE = {
+  note_id: "xhs_ssr1",
+  display_title: "SSR 笔记",
+  type: "video",
+  time: 1790000005000,
+  interact_info: { liked_count: 42, sticky: false },
+  image_list: [{ url: "http://127.0.0.1:PORT/xhs_ssr_cover.jpg" }],
+  video: { consumer: { origin_video_key: "ssr-key-1" } },
+};
+
+const DOUYIN_PROFILE_HTML = `<html><head><title>douyin profile</title></head><body>
+<script>
+fetch("/aweme/v1/web/aweme/post/?sec_user_id=MS4wLjABAAAAtest").catch(function(){});
+var xhr = new XMLHttpRequest();
+xhr.open("GET", "/aweme/v1/web/aweme/post/?sec_user_id=MS4wLjABAAAAtest", true);
+xhr.send();
+</script>
+</body></html>`;
+
+const XHS_PROFILE_HTML = `<html><head><title>xhs profile</title></head><body>
+<script>
+fetch("/api/sns/web/v1/user_posted?user_id=24charuserid1234567890").catch(function(){});
+</script>
+</body></html>`;
+
+const XHS_SSR_HTML = `<html><head><title>xhs ssr profile</title></head><body>
+<script>
+window.__INITIAL_STATE__ = { user: { notes: { _rawValue: [[${JSON.stringify(XHS_SSR_NOTE).replace(/PORT/g, String(PORT))}]] } } };
+</script>
+</body></html>`;
+
 function startTestServer(): Promise<http.Server> {
   const server = http.createServer((req, res) => {
     const url = req.url || "/";
@@ -130,9 +275,24 @@ function startTestServer(): Promise<http.Server> {
     } else if (url === "/login-page") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(LOGIN_HTML);
+    } else if (url === "/douyin-profile") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(DOUYIN_PROFILE_HTML);
+    } else if (url === "/xhs-profile") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(XHS_PROFILE_HTML);
+    } else if (url.startsWith("/xhs-ssr-profile")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(XHS_SSR_HTML);
     } else if (url === "/rest/v/profile/feed") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(FEED_BODY);
+    } else if (url.startsWith("/aweme/v1/web/aweme/post")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(DOUYIN_BODY);
+    } else if (url.startsWith("/api/sns/web/v1/user_posted")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(XHS_BODY);
     } else if (url === "/media/video.mp4") {
       const cookie = req.headers.cookie || "";
       if (!cookie.includes("verify_cookie=media-ok")) {
@@ -203,6 +363,91 @@ async function main(): Promise<void> {
     inv.feed_count === 7 && inv.photo_keys.includes("id") && inv.photo_keys.includes("coverUrl") && inv.tag_keys.includes("name") && inv.feed_keys.includes("extra_marker"),
     JSON.stringify(inv),
   );
+
+  // ---- D: 抖音映射单测（夹具源自扩展代码，非真实截获） ----
+  const dyParsed = parseDouyinResponse(DOUYIN_BODY);
+  check("D1 抖音映射条数（图文跳过、无 ID 跳过）", dyParsed.works.length === 3, `got ${dyParsed.works.length}`);
+  check("D2 抖音图文跳过 2 条", dyParsed.skippedCount === 2, `got ${dyParsed.skippedCount}`);
+  const dy1 = dyParsed.works.find((w) => w.work_id === "dy_w1");
+  check(
+    "D3 dy_w1 字段映射全对",
+    !!dy1 &&
+      dy1.title === "抖音作品一" &&
+      dy1.topics.join(",") === "话题甲" &&
+      dy1.likes === 321 &&
+      dy1.published_at === 1790000003000 &&
+      dy1.cover_url === `${base}/dy_cover1.jpg` &&
+      dy1.video_url === `${base}/dy_high1.mp4` &&
+      dy1.origin_url === "https://www.douyin.com/video/dy_w1",
+    JSON.stringify(dy1),
+  );
+  const dy2 = dyParsed.works.find((w) => w.work_id === "dy_w2");
+  check("D4 uri 回退拼播放链接", !!dy2 && dy2.video_url === "https://aweme.snssdk.com/aweme/v1/play/?video_id=v999", JSON.stringify(dy2));
+  const dy3 = dyParsed.works.find((w) => w.work_id === "dy_w3");
+  check("D5 缺字段映射为空/0", !!dy3 && dy3.title === "" && dy3.likes === 0 && dy3.cover_url === "" && dy3.video_url === "", JSON.stringify(dy3));
+  check("D6 抖音作品 is_pinned 均未填", dyParsed.works.every((w) => w.is_pinned === undefined));
+  expectFetcherError("D7 whale black_no_login → login_expired", () => parseDouyinResponse(JSON.stringify({ whaleDecisionCustom: "black_no_login", aweme_list: [] })), "login_expired");
+  try {
+    parseDouyinResponse(JSON.stringify({ whaleDecisionCustom: "mystery_value", aweme_list: [] }));
+    check("D8 其他风控决策 → other 且记录决策值", false, "未抛错");
+  } catch (e) {
+    check("D8 其他风控决策 → other 且记录决策值", e instanceof FetcherError && e.code === "other" && e.message.includes("mystery_value"), e instanceof Error ? e.message : String(e));
+  }
+  expectFetcherError("D9 缺 aweme_list → other", () => parseDouyinResponse(JSON.stringify({ has_more: false })), "other");
+  expectFetcherError("D10 非法 JSON → other", () => parseDouyinResponse("not json{"), "other");
+  const dyInv = collectDouyinFieldInventory(JSON.parse(DOUYIN_BODY));
+  check(
+    "D11 抖音字段清单含 aweme/statistics/video 键",
+    dyInv.aweme_count === 6 && dyInv.aweme_keys.includes("aweme_id") && dyInv.statistics_keys.includes("digg_count") && dyInv.video_keys.includes("play_addr"),
+    JSON.stringify(dyInv),
+  );
+  check("D12 抖音配置 hasPinnedField=false", configForPlatform("douyin")?.hasPinnedField === false);
+
+  // ---- X: 小红书映射单测（夹具源自扩展代码，非真实截获） ----
+  const xhsParsed = parseXiaohongshuResponse(XHS_BODY);
+  check("X1 小红书映射条数（图文跳过）", xhsParsed.works.length === 3, `got ${xhsParsed.works.length}`);
+  check("X2 小红书图文跳过 1 条", xhsParsed.skippedCount === 1, `got ${xhsParsed.skippedCount}`);
+  const xhs1 = xhsParsed.works.find((w) => w.work_id === "xhs_n1");
+  check(
+    "X3 xhs_n1 字段映射全对",
+    !!xhs1 &&
+      xhs1.title === "小红书笔记一" &&
+      xhs1.topics.length === 0 &&
+      xhs1.likes === 55 &&
+      xhs1.published_at === 1790000000000 &&
+      xhs1.cover_url === `${base}/xhs_cover1.jpg` &&
+      xhs1.video_url === "https://sns-video-bd.xhscdn.com/key-abc-123" &&
+      xhs1.origin_url === "https://www.xiaohongshu.com/explore/xhs_n1?xsec_token=tok123&xsec_source=pc_user" &&
+      xhs1.is_pinned === true,
+    JSON.stringify(xhs1),
+  );
+  const xhs2 = xhsParsed.works.find((w) => w.work_id === "xhs_n2");
+  check(
+    "X4 清晰度表取 1080P（WM 条目已排除）",
+    !!xhs2 && xhs2.video_url === `${base}/xhs_1080.mp4` && xhs2.cover_url === `${base}/xhs_cover2.jpg` && xhs2.is_pinned === false,
+    JSON.stringify(xhs2),
+  );
+  const xhs3 = xhsParsed.works.find((w) => w.work_id === "xhs_n3");
+  check("X5 title 回退与缺字段", !!xhs3 && xhs3.title === "只有 title 字段" && xhs3.is_pinned === false && xhs3.video_url === "", JSON.stringify(xhs3));
+  expectFetcherError(
+    "X6 笔记缺 note_id → login_expired",
+    () => parseXiaohongshuResponse(JSON.stringify({ success: true, code: 1000, data: { notes: [{ display_title: "无 id" }] } })),
+    "login_expired",
+  );
+  expectFetcherError("X7 code 非 1000 → other", () => parseXiaohongshuResponse(JSON.stringify({ success: true, code: 1001, msg: "bad", data: { notes: [] } })), "other");
+  expectFetcherError("X8 success false → other", () => parseXiaohongshuResponse(JSON.stringify({ success: false, msg: "fail", data: { notes: [] } })), "other");
+  expectFetcherError("X9 缺 notes → other", () => parseXiaohongshuResponse(JSON.stringify({ success: true, code: 1000, data: {} })), "other");
+  const xhsBare = parseXiaohongshuResponse(JSON.stringify([{ note_id: "bare1", display_title: "裸数组", type: "video", time: 1790000000000, interact_info: { liked_count: 1 } }]));
+  check("X10 裸笔记数组可解析（SSR 形态）", xhsBare.works.length === 1 && xhsBare.works[0].work_id === "bare1", JSON.stringify(xhsBare));
+  const xhsInv = collectXiaohongshuFieldInventory(JSON.parse(XHS_BODY));
+  check(
+    "X11 小红书字段清单含 sticky 与各层键",
+    xhsInv.note_count === 4 && xhsInv.note_keys.includes("note_id") && xhsInv.interact_info_keys.includes("sticky") && xhsInv.video_keys.includes("consumer") && xhsInv.image_keys.includes("url"),
+    JSON.stringify(xhsInv),
+  );
+  check("X12 小红书配置 hasPinnedField=true", configForPlatform("xiaohongshu")?.hasPinnedField === true);
+  check("X13 快手配置 hasPinnedField=false", configForPlatform("kuaishou")?.hasPinnedField === false);
+  check("X14 未知平台配置为空", configForPlatform("bilibili") === null);
 
   // ---- B: 浏览器采集端到端 ----
   const ipcEvents: Array<Record<string, unknown>> = [];
@@ -355,6 +600,129 @@ async function main(): Promise<void> {
     check("E8 链路截获已存档", chainCaps.length >= 1, chainCaps.join(","));
   } finally {
     await running.close();
+  }
+
+  // ---- M: 多平台端到端（抖音/小红书本地页截获 + SSR 补充捕获 + 按平台状态） ----
+  const dySes = session.fromPartition(DOUYIN_PARTITION);
+  const xhsSes = session.fromPartition(XIAOHONGSHU_PARTITION);
+  check("M1 未放 cookie 前抖音登录为 false", (await collector.checkBrowserLogin("douyin")) === false);
+  check("M2 未放 cookie 前小红书登录为 false", (await collector.checkBrowserLogin("xiaohongshu")) === false);
+  await dySes.cookies.set({ url: "https://www.douyin.com", name: "verify_login", value: "local-only", expirationDate: Math.floor(Date.now() / 1000) + 3600 });
+  await xhsSes.cookies.set({ url: "https://www.xiaohongshu.com", name: "verify_login", value: "local-only", expirationDate: Math.floor(Date.now() / 1000) + 3600 });
+  check("M3 放 cookie 后抖音登录为 true", (await collector.checkBrowserLogin("douyin")) === true);
+  check("M4 放 cookie 后小红书登录为 true", (await collector.checkBrowserLogin("xiaohongshu")) === true);
+  check("M5 未知平台登录恒为 false", (await collector.checkBrowserLogin("bilibili")) === false);
+  const multiStatus = await collector.getStatus();
+  check(
+    "M6 getStatus 按平台返回三平台状态",
+    multiStatus.platforms.kuaishou.loggedIn === true &&
+      multiStatus.platforms.douyin.loggedIn === true &&
+      multiStatus.platforms.xiaohongshu.loggedIn === true &&
+      multiStatus.loggedIn === true,
+    JSON.stringify(multiStatus),
+  );
+
+  const dyAccount = { platform: "douyin", account_id: "verify_dy", name: "抖音验证账号", home_url: `${base}/douyin-profile` };
+  let dyResult = null as Awaited<ReturnType<typeof collector.fetchWorks>> | null;
+  try {
+    dyResult = await collector.fetchWorks(dyAccount, "");
+  } catch (e) {
+    check("M7 抖音端到端采集成功", false, e instanceof Error ? e.message : String(e));
+  }
+  if (dyResult) {
+    check("M7 抖音端到端采集成功且 3 条", dyResult.works.length === 3, `got ${dyResult.works.length}`);
+    check("M8 抖音 has_pinned_field=false", dyResult.has_pinned_field === false);
+    check("M9 抖音跳过 2 条图文", dyResult.skippedCount === 2, `got ${dyResult.skippedCount}`);
+    const mdy1 = dyResult.works.find((w) => w.work_id === "dy_w1");
+    check("M10 抖音端到端映射与单测一致", !!mdy1 && mdy1.video_url === `${base}/dy_high1.mp4` && mdy1.topics.join(",") === "话题甲", JSON.stringify(mdy1));
+  }
+
+  const xhsAccount = { platform: "xiaohongshu", account_id: "verify_xhs", name: "小红书验证账号", home_url: `${base}/xhs-profile` };
+  let xhsResult = null as Awaited<ReturnType<typeof collector.fetchWorks>> | null;
+  try {
+    xhsResult = await collector.fetchWorks(xhsAccount, "");
+  } catch (e) {
+    check("M11 小红书端到端采集成功", false, e instanceof Error ? e.message : String(e));
+  }
+  if (xhsResult) {
+    check("M11 小红书端到端采集成功且 3 条", xhsResult.works.length === 3, `got ${xhsResult.works.length}`);
+    check("M12 小红书 has_pinned_field=true", xhsResult.has_pinned_field === true);
+    check("M13 小红书跳过 1 条图文", xhsResult.skippedCount === 1, `got ${xhsResult.skippedCount}`);
+    const mxhs1 = xhsResult.works.find((w) => w.work_id === "xhs_n1");
+    check("M14 小红书置顶笔记 is_pinned=true", !!mxhs1 && mxhs1.is_pinned === true, JSON.stringify(mxhs1));
+  }
+  let xhsCaps: string[] = [];
+  try {
+    xhsCaps = (await fs.readdir(capDir)).filter((n) => n.startsWith("feed-verify_xhs-"));
+  } catch {
+    xhsCaps = [];
+  }
+  check("M15 小红书截获存档已写", xhsCaps.length >= 1, xhsCaps.join(","));
+  if (xhsCaps.length > 0) {
+    const payload = JSON.parse(await fs.readFile(path.join(capDir, xhsCaps[0]), "utf8")) as Record<string, unknown>;
+    const inventory = payload.field_inventory as { note_keys?: string[]; interact_info_keys?: string[] } | null;
+    check(
+      "M16 存档含平台与字段清单",
+      payload.platform === "xiaohongshu" && !!inventory && Array.isArray(inventory.note_keys) && inventory.note_keys.includes("note_id") && Array.isArray(inventory.interact_info_keys) && inventory.interact_info_keys.includes("sticky"),
+      JSON.stringify(Object.keys(payload)),
+    );
+  }
+
+  // SSR 补充捕获：页面不发任何请求，只嵌 __INITIAL_STATE__；主页链接故意带 xsec 参数，验证采集时去掉
+  const ssrAccount = {
+    platform: "xiaohongshu",
+    account_id: "verify_ssr",
+    name: "SSR 验证账号",
+    home_url: `${base}/xhs-ssr-profile?xsec_token=shouldbestripped&xsec_source=pc_user`,
+  };
+  let ssrResult = null as Awaited<ReturnType<typeof collector.fetchWorks>> | null;
+  try {
+    ssrResult = await collector.fetchWorks(ssrAccount, "");
+  } catch (e) {
+    check("M17 SSR 补充捕获成功", false, e instanceof Error ? e.message : String(e));
+  }
+  if (ssrResult) {
+    check("M17 SSR 补充捕获成功且 1 条", ssrResult.works.length === 1 && ssrResult.works[0].work_id === "xhs_ssr1", JSON.stringify(ssrResult.works));
+  }
+  let ssrCaps: string[] = [];
+  try {
+    ssrCaps = (await fs.readdir(capDir)).filter((n) => n.startsWith("feed-verify_ssr-"));
+  } catch {
+    ssrCaps = [];
+  }
+  if (ssrCaps.length > 0) {
+    const payload = JSON.parse(await fs.readFile(path.join(capDir, ssrCaps[0]), "utf8")) as Record<string, unknown>;
+    check("M18 SSR 存档来源为 ssr-state", payload.source === "ssr-state", JSON.stringify(payload.source));
+  } else {
+    check("M18 SSR 存档来源为 ssr-state", false, "无存档");
+  }
+  const ssrWin = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith(`${base}/xhs-ssr-profile`));
+  check("M19 小红书导航 URL 已去掉 xsec 参数", !!ssrWin && !ssrWin.webContents.getURL().includes("xsec_token"), ssrWin?.webContents.getURL() ?? "no window");
+
+  // 抖音登录窗口显示/隐藏（独立窗口，不影响快手窗口）
+  await collector.showLoginWindow("douyin");
+  const dyWins = BrowserWindow.getAllWindows().filter((w) => w.isVisible());
+  check("M20 抖音登录窗口已显示", dyWins.length >= 1, `visible: ${dyWins.length}`);
+  if (dyWins.length > 0) {
+    dyWins[0].close();
+    await new Promise((r) => setTimeout(r, 500));
+    check("M21 抖音窗口点 X 后隐藏而非销毁", !dyWins[0].isVisible() && !dyWins[0].isDestroyed());
+  }
+
+  // 抖音短链拒绝
+  try {
+    await collector.fetchWorks({ platform: "douyin", account_id: "short", name: "短链", home_url: "https://v.douyin.com/abc123/" }, "");
+    check("M22 抖音短链明确报错", false, "未抛错");
+  } catch (e) {
+    check("M22 抖音短链明确报错", e instanceof FetcherError && e.code === "other" && /请贴完整主页链接/.test(e.message), e instanceof Error ? e.message : String(e));
+  }
+
+  // 未知平台不静默降级
+  try {
+    await collector.fetchWorks({ platform: "bilibili", account_id: "unknown", name: "未知平台", home_url: `${base}/profile-page` }, "");
+    check("M23 未知平台明确报错", false, "未抛错");
+  } catch (e) {
+    check("M23 未知平台明确报错", e instanceof FetcherError && e.code === "other" && /尚未接入/.test(e.message), e instanceof Error ? e.message : String(e));
   }
 
   collector.dispose();
