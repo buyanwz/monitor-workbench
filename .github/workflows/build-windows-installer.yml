@@ -38,20 +38,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $f = Get-Item release/MonitorWorkbench-Setup-0.1.0.exe
+          $f = Get-Item release/MonitorWorkbench-Setup-0.2.0.exe
           Write-Output "installer size: $($f.Length) bytes"
           Write-Output "installer SHA-256: $((Get-FileHash $f -Algorithm SHA256).Hash)"
           if ($f.Length -lt 80MB) { throw "安装包太小（$($f.Length) 字节），未完成" }
           if (-not (Test-Path release/latest.yml)) { throw 'latest.yml 缺失，自动更新元数据没生成' }
           $ym = Get-Content release/latest.yml -Raw
-          if ($ym -notmatch 'version: 0.1.0') { throw 'latest.yml 里的版本号不是 0.1.0' }
-          if ($ym -notmatch 'MonitorWorkbench-Setup-0.1.0.exe') { throw 'latest.yml 里的安装包文件名不对' }
+          if ($ym -notmatch 'version: 0.2.0') { throw 'latest.yml 里的版本号不是 0.2.0' }
+          if ($ym -notmatch 'MonitorWorkbench-Setup-0.2.0.exe') { throw 'latest.yml 里的安装包文件名不对' }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MonitorWorkbench-Setup-0.1.0
-          path: release/MonitorWorkbench-Setup-0.1.0.exe
+          name: MonitorWorkbench-Setup-0.2.0
+          path: release/MonitorWorkbench-Setup-0.2.0.exe
           if-no-files-found: error
 
       - name: Publish to Releases
@@ -59,7 +59,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create v0.1.0 release/MonitorWorkbench-Setup-0.1.0.exe --title '监控账号工作台 0.1.0' --notes 'Windows 安装包（NSIS，per-user 一键安装，无需管理员权限）。首版：视频与文件全部存在本机，每天 8:00 自动采集、每账号最新 5 条、保留 3 天、平台分组排序、预览与 ZIP 下载。' --target main
-          if ($LASTEXITCODE -ne 0) { gh release upload v0.1.0 release/MonitorWorkbench-Setup-0.1.0.exe --clobber }
-          gh release upload v0.1.0 release/latest.yml --clobber
-          if (Test-Path release/MonitorWorkbench-Setup-0.1.0.exe.blockmap) { gh release upload v0.1.0 release/MonitorWorkbench-Setup-0.1.0.exe.blockmap --clobber }
+          gh release create v0.2.0 release/MonitorWorkbench-Setup-0.2.0.exe --title '监控账号工作台 0.2.0' --notes 'Windows 安装包（NSIS，per-user 一键安装，无需管理员权限）。新增浏览器采集：程序内嵌浏览器，登录一次快手后可自动截获达人作品数据；固定端口 17881、上报令牌、登录窗口。视频与文件全部存在本机，每天 8:00 自动采集、每账号最新 5 条、保留 3 天、平台分组排序、预览与 ZIP 下载。' --target main
+          if ($LASTEXITCODE -ne 0) { gh release upload v0.2.0 release/MonitorWorkbench-Setup-0.2.0.exe --clobber }
+          gh release upload v0.2.0 release/latest.yml --clobber
+          if (Test-Path release/MonitorWorkbench-Setup-0.2.0.exe.blockmap) { gh release upload v0.2.0 release/MonitorWorkbench-Setup-0.2.0.exe.blockmap --clobber }
