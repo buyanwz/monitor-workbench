@@ -30,8 +30,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # --publish never：打包时不让 electron-builder 自己发布（它在 CI 里检测到发布配置会去要 GH_TOKEN，缺了就报错）；发版统一走下面 gh release 那步。
       - name: Package NSIS installer
-        run: npm run dist:win
+        run: npm run build && npx electron-builder --win nsis --publish never
 
       - name: Verify installer
         shell: pwsh
