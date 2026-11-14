@@ -1,0 +1,50 @@
+# electron-builder 打包配置（本地 exe 版）。
+#
+# 目标：Windows exe，NSIS per-user 安装（不用管理员权限），
+# 数据目录与程序目录分离（数据在 %APPDATA%\监控账号工作台，卸载不删数据）。
+# 更新源 = GitHub Releases（占位仓库，正式发版前须确认 owner/repo，见 README）。
+# 注意：本工程无图标文件，打包用 Electron 默认图标（发版前补 build/icon.ico，见 README 待办）。
+appId: com.monitorworkbench.app
+productName: 监控账号工作台
+copyright: Copyright © 2026
+
+publish:
+  provider: github
+  owner: buyanwz
+  repo: monitor-workbench
+
+directories:
+  output: release
+
+files:
+  - dist/electron/**
+  - package.json
+
+extraResources:
+  # 前端静态文件（服务同源托管 /ui/）
+  - from: renderer
+    to: renderer
+  # 数据库迁移（服务启动时跑）
+  - from: server/migrations
+    to: migrations
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: MonitorWorkbench-Setup-${version}.exe
+
+nsis:
+  oneClick: true
+  perMachine: false
+  installerLanguages: ["zh_CN"]
+  language: "2052"
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # 卸载只删程序目录，不动 %APPDATA% 数据目录
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - dir
+  category: Utility

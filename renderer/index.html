@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>监控账号工作台</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app">
+<!-- 登录 / 设置口令（未登录时显示） -->
+<div id="auth-view" class="auth-view" hidden>
+  <div class="auth-card">
+    <div class="auth-logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 12h9"/><circle cx="12" cy="12" r="3"/><path d="M21 3l-6 6"/></svg>
+    </div>
+    <h1>监控账号工作台</h1>
+    <p class="auth-sub" id="auth-sub">请输入访问口令</p>
+    <div id="auth-error" class="alert alert-error" hidden></div>
+    <form id="setup-form" hidden>
+      <p class="form-hint">第一次打开，先设置一个访问口令（至少 8 位）。口令只存在本机服务里，输错 5 次会锁定 15 分钟。</p>
+      <label class="field"><span>设置口令</span>
+        <input type="password" name="password" autocomplete="new-password" minlength="8" required placeholder="至少 8 位">
+      </label>
+      <label class="field"><span>再输一次口令</span>
+        <input type="password" name="password2" autocomplete="new-password" minlength="8" required placeholder="和上面输的一样">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">设置口令并进入</button>
+    </form>
+    <form id="login-form" hidden>
+      <label class="field"><span>访问口令</span>
+        <input type="password" name="password" autocomplete="current-password" required placeholder="请输入访问口令">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">登录</button>
+    </form>
+    <p class="auth-foot">仅采集已授权账号；下载内容仅限内部使用，注意平台条款与版权。</p>
+  </div>
+</div>
+
+<!-- 主界面（登录后显示） -->
+<div id="app-view" class="shell" hidden>
+  <div id="sidebar-overlay" class="sidebar-overlay" hidden></div>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-head">
+      <span class="sidebar-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 12h9"/><circle cx="12" cy="12" r="3"/><path d="M21 3l-6 6"/></svg>
+      </span>
+      <span class="sidebar-title">监控账号工作台</span>
+      <button type="button" id="collapse-btn" class="icon-btn collapse-btn" title="收起侧栏" aria-label="收起侧栏">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+    </div>
+    <nav class="sidebar-nav" id="sidebar-nav">
+      <button type="button" class="nav-item" data-page="dashboard">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        <span class="nav-label">看板</span>
+      </button>
+      <button type="button" class="nav-item" data-page="accounts">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><path d="M16 8.5a3 3 0 1 1 3 3"/><path d="M17.5 15c2.2.3 3.6 1.8 4 5"/></svg>
+        <span class="nav-label">账号管理</span>
+      </button>
+      <button type="button" class="nav-item" data-page="tasks">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+        <span class="nav-label">采集任务</span>
+      </button>
+      <button type="button" class="nav-item" data-page="works">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M10 9.5l5 2.5-5 2.5z"/></svg>
+        <span class="nav-label">作品库</span>
+      </button>
+      <button type="button" class="nav-item" data-page="notifications">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 15 18 9z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg>
+        <span class="nav-label">通知中心</span>
+        <span id="nav-unread-badge" class="nav-badge" hidden>0</span>
+      </button>
+      <button type="button" class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.54a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.6.86 1.03 1.56 1.03H21a2 2 0 1 1 0 4h-.09c-.7 0-1.32.43-1.51 1.03z"/></svg>
+        <span class="nav-label">设置</span>
+      </button>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="nav-label sidebar-foot-text">每天 8:00 自动采集</span>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button type="button" id="menu-btn" class="icon-btn menu-btn" title="打开菜单" aria-label="打开菜单">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <span class="topbar-title">监控账号工作台</span>
+      <span class="topbar-spacer"></span>
+      <span id="me-label" class="me-label"></span>
+      <button type="button" id="logout-btn" class="btn btn-ghost btn-sm">退出登录</button>
+    </header>
+    <main class="content">
+      <div class="page-head">
+        <h1 id="page-title">看板</h1>
+        <nav class="breadcrumb" id="breadcrumb">首页 / 看板</nav>
+      </div>
+      <div id="page" class="page"></div>
+    </main>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="drawer-root"></div>
+<div id="toast-root" class="toast-root" aria-live="polite"></div>
+</div><!-- /#app -->
+
+<script src="./app.js"></script>
+</body>
+</html>
