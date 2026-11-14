@@ -99,6 +99,8 @@ h3 { font-size: 14px; margin: 0 0 8px; }
 /* ---------- 通用组件 ---------- */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px; margin-bottom: 16px; }
 .card:last-child { margin-bottom: 0; }
+/* 账号页顶部的采集登录卡：要一眼看见，左边加粗主色边、标题行底色浅蓝 */
+.card-login { border-left: 4px solid var(--primary); background: linear-gradient(180deg, var(--primary-soft) 0, var(--card) 64px); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .card-head h2 { margin: 0; }
 .muted { color: var(--text-dim); }

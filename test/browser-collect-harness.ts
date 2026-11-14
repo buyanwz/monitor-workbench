@@ -6,7 +6,7 @@ import { app, BrowserWindow, ipcMain, session } from "electron";
 import * as http from "node:http";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { BrowserCollector, COLLECT_PARTITION, DOUYIN_PARTITION, XIAOHONGSHU_PARTITION, configForPlatform } from "../electron/browser-collect";
+import { BrowserCollector, COLLECT_PARTITION, DOUYIN_PARTITION, XIAOHONGSHU_PARTITION, browserUserAgent, configForPlatform } from "../electron/browser-collect";
 import { collectFieldInventory, parseFeedResponse } from "../electron/feed-map";
 import { collectDouyinFieldInventory, parseDouyinResponse } from "../electron/feed-map-douyin";
 import { collectXiaohongshuFieldInventory, parseXiaohongshuResponse } from "../electron/feed-map-xiaohongshu";
@@ -21,6 +21,8 @@ app.setPath("userData", path.join(DATA_DIR, "userdata"));
 
 let passed = 0;
 let failed = 0;
+/** 媒体下载请求实际带上的 UA（测试服务在 /media/video.mp4 分支记录，供 A6 断言）。 */
+let lastMediaUa = "";
 function check(name: string, cond: boolean, extra = ""): void {
   if (cond) {
     passed++;
@@ -269,6 +271,7 @@ window.__INITIAL_STATE__ = { user: { notes: { _rawValue: [[${JSON.stringify(XHS_
 function startTestServer(): Promise<http.Server> {
   const server = http.createServer((req, res) => {
     const url = req.url || "/";
+    if (url === "/media/video.mp4") lastMediaUa = req.headers["user-agent"] || "";
     if (url === "/profile-page") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(PROFILE_HTML);
@@ -724,6 +727,33 @@ async function main(): Promise<void> {
   } catch (e) {
     check("M23 未知平台明确报错", e instanceof FetcherError && e.code === "other" && /尚未接入/.test(e.message), e instanceof Error ? e.message : String(e));
   }
+
+  // ---- A: 真实 UA 回归（R7）：三平台分区会话 UA 须像 Chrome、不能含 Electron ----
+  // 根因：Electron 默认 UA 含 "Electron" 字样，真机上快手直接回一页 JSON，登录页打不开。
+  // 三个平台的窗口到这里都已建过（B3/M7/M11），会话 UA 应已全部设置好。
+  const expectedUa = browserUserAgent();
+  const uaOf = (partition: string): string => session.fromPartition(partition).getUserAgent();
+  const kuaishouUa = uaOf(COLLECT_PARTITION);
+  const douyinUa = uaOf(DOUYIN_PARTITION);
+  const xhsUa = uaOf(XIAOHONGSHU_PARTITION);
+  console.log(`  UA（快手分区）: ${kuaishouUa}`);
+  check("A1 快手分区 UA 含 Chrome/ 且不含 Electron", !!expectedUa && kuaishouUa.includes("Chrome/") && !kuaishouUa.includes("Electron"), kuaishouUa);
+  check("A2 抖音分区 UA 含 Chrome/ 且不含 Electron", !!expectedUa && douyinUa.includes("Chrome/") && !douyinUa.includes("Electron"), douyinUa);
+  check("A3 小红书分区 UA 含 Chrome/ 且不含 Electron", !!expectedUa && xhsUa.includes("Chrome/") && !xhsUa.includes("Electron"), xhsUa);
+  check(
+    "A4 三分区 UA 与运行时 Chrome 版本拼出的真实 UA 一致",
+    !!expectedUa &&
+      kuaishouUa === expectedUa &&
+      douyinUa === expectedUa &&
+      xhsUa === expectedUa &&
+      expectedUa.includes(`Chrome/${process.versions.chrome}`) &&
+      expectedUa.includes("Windows NT 10.0"),
+    expectedUa ?? "(none)",
+  );
+  const anyWin = BrowserWindow.getAllWindows()[0];
+  const wcUa = anyWin ? anyWin.webContents.getUserAgent() : "";
+  check("A5 采集窗口 webContents UA 同样不含 Electron", !!expectedUa && !!anyWin && wcUa === expectedUa && !wcUa.includes("Electron"), wcUa);
+  check("A6 媒体下载请求带的 UA 同样是新 UA（R8）", !!expectedUa && lastMediaUa === expectedUa, lastMediaUa);
 
   collector.dispose();
   server.close();

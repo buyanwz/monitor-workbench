@@ -11,6 +11,9 @@
 //   - 截获到的原始返回存 <数据目录>/captures/ 供人工取证（每账号只留最近 5 份）；
 //   - 捕获失败显式抛分类错误，绝不假装成功、绝不编数据；
 //   - 媒体下载必须带分区 cookie（R8），不用裸 HTTP 客户端；
+//   - UA：三平台分区会话一律用真实 Chrome UA（R7）；Electron 默认 UA 含
+//     "Electron" 字样，平台会把请求当成程序、直接回一页 JSON（真机登录页
+//     只显示一行 JSON 的根因），登录页根本打不开；
 //   - 未知平台绝不静默降级，直接报“尚未接入”。
 
 import { BrowserWindow, ipcMain, session } from "electron";
@@ -31,6 +34,17 @@ import { collectXiaohongshuFieldInventory, parseXiaohongshuResponse } from "./fe
 export const COLLECT_PARTITION = "persist:monitor-kuaishou";
 export const DOUYIN_PARTITION = "persist:monitor-douyin";
 export const XIAOHONGSHU_PARTITION = "persist:monitor-xiaohongshu";
+
+/**
+ * 浏览器采集用的真实 UA：伪装成 Windows 版 Chrome（R7）。
+ * Chrome 版本取运行时 process.versions.chrome（随 Electron 自带 Chromium 走），
+ * 不写死——写死会随 Electron 升级穿帮。取不到版本号时返回 null，调用方沿用默认 UA。
+ */
+export function browserUserAgent(): string | null {
+  const chrome = process.versions.chrome;
+  if (!chrome) return null;
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome} Safari/537.36`;
+}
 
 export interface PlatformCollectConfig {
   platform: string;
@@ -246,6 +260,18 @@ export class BrowserCollector implements PlatformFetcher, BrowserControl {
   }
 
   private ensureWindow(config: PlatformCollectConfig): BrowserWindow {
+    // R7 真实 UA：建窗前先给该平台分区会话设置真实 Chrome UA——登录窗口与
+    // 采集窗口共用同一 ensureWindow，改一处两处都受益；download() 读
+    // sess.getUserAgent() 拿到的也是这个 UA（R8 媒体下载同一受益，不用另改）。
+    // 放在复用分支之前：即使窗口已存在，也确保会话 UA 已设置。
+    const ua = browserUserAgent();
+    if (ua) {
+      try {
+        session.fromPartition(config.partition).setUserAgent(ua);
+      } catch {
+        // 设置失败不阻塞建窗，沿用默认 UA（平台可能回 JSON，由调用方报错可见）
+      }
+    }
     const existing = this.wins.get(config.platform);
     if (existing && !existing.isDestroyed()) return existing;
     const win = new BrowserWindow({

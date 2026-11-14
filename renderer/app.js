@@ -453,8 +453,7 @@ PAGE_LOADERS.accounts = async function () {
     try { browser = await api("GET", "/browser/status"); } catch (e) { browser = null; }
     function browserLoginText(platform) {
       if (!browser || !browser.available) return "";
-      var st = (browser.platforms && browser.platforms[platform]) || null;
-      var logged = st ? st.logged_in : (platform === "kuaishou" ? browser.logged_in : null);
+      var logged = browserPlatformStatus(browser, platform).logged;
       return '<div class="cell-sub">采集登录：' + (logged === true ? "浏览器已登录" : logged === false ? "浏览器未登录" : "未知") + "</div>";
     }
     var rows = accounts.map(function (a) {
@@ -478,6 +477,7 @@ PAGE_LOADERS.accounts = async function () {
         "</div></td></tr>";
     }).join("");
     page.innerHTML =
+      accountLoginCardHtml(browser) +
       '<div class="card" id="account-add-guide"><div class="card-head"><h2>添加要采集的达人账号</h2>' +
       '<div class="btn-row"><button type="button" class="btn" id="goto-batch-add">批量添加</button>' +
       '<button type="button" class="btn btn-primary" id="account-add-btn" data-acc="new">添加账号</button></div></div>' +
@@ -503,7 +503,33 @@ PAGE_LOADERS.accounts = async function () {
         : '<div class="table-wrap"><table><thead><tr><th>账号</th><th>主页</th><th>备注</th><th>状态</th><th>健康</th><th>登录态</th><th>操作</th></tr></thead><tbody>' + rows + "</tbody></table></div>") +
       "</div>" +
       '<p class="notice-text">合规提示：仅采集已授权账号。登录态只显示“已配置 / 未配置 / 已失效”，原文永不回显；重新配置会覆盖旧的登录态。' +
-      (browser && browser.available ? "浏览器采集模式下，采集用浏览器里对应平台的登录，见设置页「浏览器采集」。" : "") + "</p>";
+      (browser && browser.available ? "浏览器采集模式下，采集用上面「采集登录」卡里对应平台的登录。" : "") + "</p>";
+    /* 采集登录卡：状态徽标填已取到的浏览器状态，按钮与设置页共用同一套登录逻辑 */
+    var loginCard = $("#account-login-card", page);
+    if (loginCard && !(browser && browser.available === false)) {
+      var loginErrBox = $("#account-login-error", page);
+      if (browser) fillBrowserLoginStatus(loginCard, browser, ACCOUNT_LOGIN_PLATFORMS);
+      bindBrowserLoginButtons(loginCard, ACCOUNT_LOGIN_PLATFORMS, {
+        clearError: function () { loginErrBox.hidden = true; },
+        onError: function (msg) { loginErrBox.textContent = msg; loginErrBox.hidden = false; },
+        refresh: function () {
+          api("GET", "/browser/status")
+            .then(function (s) { fillBrowserLoginStatus(loginCard, s, ACCOUNT_LOGIN_PLATFORMS); })
+            .catch(function () {});
+        },
+      });
+      var loginRefreshBtn = $("#account-login-refresh", page);
+      if (loginRefreshBtn) {
+        loginRefreshBtn.addEventListener("click", function () {
+          var btn = this;
+          loginErrBox.hidden = true;
+          withBusy(btn, async function () {
+            try { fillBrowserLoginStatus(loginCard, await api("GET", "/browser/status"), ACCOUNT_LOGIN_PLATFORMS); }
+            catch (err) { loginErrBox.textContent = err.message; loginErrBox.hidden = false; }
+          });
+        });
+      }
+    }
     /* 批量添加表单：提交后刷新列表，结果保留在批量区展示 */
     var batchForm = $("#batch-add-form", page);
     if (batchForm) {
@@ -1294,6 +1320,78 @@ async function copyText(text) {
   document.execCommand("copy");
   ta.remove();
 }
+/* 浏览器采集登录块（设置页「浏览器采集」区与账号页「采集登录」卡共用）：
+   每平台一块：登录状态徽标 + 上次截获时间 + 打开登录窗口按钮。
+   登录逻辑只有一套：GET /browser/status 查状态，POST /browser/show-login 开登录窗。 */
+function browserPlatformStatus(s, platform) {
+  var pst = (s.platforms && s.platforms[platform]) || null;
+  return {
+    logged: pst ? pst.logged_in : (platform === "kuaishou" ? s.logged_in : null),
+    last: pst ? pst.last_capture_at : (platform === "kuaishou" ? s.last_capture_at : null),
+  };
+}
+function browserLoginBlockHtml(p) {
+  return '<div class="browser-platform"><h3>' + p.label + "</h3>" +
+    '<dl class="kv">' +
+    "<dt>登录状态</dt><dd id=\"" + p.badgeId + "\">—</dd>" +
+    "<dt>上次截获时间</dt><dd id=\"" + p.lastId + "\">—</dd>" +
+    "</dl>" +
+    '<div class="btn-row"><button type="button" class="btn btn-primary" id="' + p.btnId + '">打开' + p.label + '登录窗口</button></div></div>';
+}
+function fillBrowserLoginStatus(root, s, platforms) {
+  platforms.forEach(function (p) {
+    var st = browserPlatformStatus(s, p.platform);
+    var badge = $("#" + p.badgeId, root);
+    if (badge) {
+      badge.innerHTML = st.logged === true
+        ? '<span class="badge badge-green">已登录</span>'
+        : st.logged === false
+          ? '<span class="badge badge-gray">未登录</span>'
+          : '<span class="badge badge-gray">未知</span>';
+    }
+    var lastEl = $("#" + p.lastId, root);
+    if (lastEl) lastEl.textContent = fmtDateTime(st.last);
+  });
+}
+/* hooks：clearError() 清报错，onError(msg) 显示报错，refresh() 重新拉状态并填回徽标 */
+function bindBrowserLoginButtons(root, platforms, hooks) {
+  platforms.forEach(function (p) {
+    var btn = $("#" + p.btnId, root);
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var b = this;
+      if (hooks.clearError) hooks.clearError();
+      withBusy(b, async function () {
+        try {
+          await api("POST", "/browser/show-login", { platform: p.platform });
+          toast("登录窗口已打开，请在里面登录" + p.label + "，登完点“刷新状态”", "success");
+          /* 登录是人工操作，15 秒后自动刷新一次状态，免得用户反复点 */
+          setTimeout(function () {
+            if (!document.body.contains(root)) return;
+            hooks.refresh();
+          }, 15000);
+        } catch (err) { hooks.onError(err.message); }
+      });
+    });
+  });
+}
+/* 账号页「采集登录」卡的平台配置（元素 id 与设置页区分开，两页不会撞） */
+var ACCOUNT_LOGIN_PLATFORMS = [
+  { platform: "kuaishou", label: "快手", badgeId: "account-login-badge", lastId: "account-last-capture", btnId: "account-login-btn" },
+  { platform: "douyin", label: "抖音", badgeId: "account-login-badge-douyin", lastId: "account-last-capture-douyin", btnId: "account-login-btn-douyin" },
+  { platform: "xiaohongshu", label: "小红书", badgeId: "account-login-badge-xiaohongshu", lastId: "account-last-capture-xiaohongshu", btnId: "account-login-btn-xiaohongshu" },
+];
+function accountLoginCardHtml(browser) {
+  if (browser && browser.available === false) {
+    return '<div class="card card-login" id="account-login-card"><h2>采集登录：先登录你自己的号</h2>' +
+      '<p class="form-hint" style="margin-bottom:0">当前为命令行模式，没有内嵌浏览器，浏览器采集不可用。</p></div>';
+  }
+  return '<div class="card card-login" id="account-login-card"><div class="card-head"><h2>采集登录：先登录你自己的号</h2>' +
+    '<div class="btn-row"><button type="button" class="btn" id="account-login-refresh">刷新状态</button></div></div>' +
+    '<p class="form-hint">采集要用你自己的账号去登录（建议用小号）。先在这里登录自己的号，再添加下面的达人；每天 8:00 采集时，程序就用这个登录去打开达人主页拿数据。验证码也在登录窗口里手动处理，登录后重启程序还在。</p>' +
+    ACCOUNT_LOGIN_PLATFORMS.map(browserLoginBlockHtml).join("") +
+    '<div class="alert alert-error" id="account-login-error" hidden></div></div>';
+}
 /* 设置页「浏览器采集」区：按平台分块（登录状态 + 登录窗口按钮）+ 共用的上报地址与令牌 + 当前端口 */
 var BROWSER_PLATFORMS = [
   { platform: "kuaishou", label: "快手", badgeId: "browser-login-badge", lastId: "browser-last-capture", btnId: "browser-login-btn" },
@@ -1310,14 +1408,7 @@ async function renderBrowserSection() {
         '<p class="form-hint">当前为命令行模式，没有内嵌浏览器，浏览器采集不可用。</p>';
       return;
     }
-    var blocks = BROWSER_PLATFORMS.map(function (p) {
-      return '<div class="browser-platform"><h3>' + p.label + "</h3>" +
-        '<dl class="kv">' +
-        "<dt>登录状态</dt><dd id=\"" + p.badgeId + "\">—</dd>" +
-        "<dt>上次截获时间</dt><dd id=\"" + p.lastId + "\">—</dd>" +
-        "</dl>" +
-        '<div class="btn-row"><button type="button" class="btn btn-primary" id="' + p.btnId + '">打开' + p.label + '登录窗口</button></div></div>';
-    }).join("");
+    var blocks = BROWSER_PLATFORMS.map(browserLoginBlockHtml).join("");
     card.innerHTML =
       "<h2>浏览器采集</h2>" +
       blocks +
@@ -1336,21 +1427,7 @@ async function renderBrowserSection() {
     var errBox = $("#browser-section-error", card);
     function showBrowserError(msg) { errBox.textContent = msg; errBox.hidden = false; }
     function fillStatus(s) {
-      BROWSER_PLATFORMS.forEach(function (p) {
-        var pst = (s.platforms && s.platforms[p.platform]) || null;
-        var logged = pst ? pst.logged_in : (p.platform === "kuaishou" ? s.logged_in : null);
-        var last = pst ? pst.last_capture_at : (p.platform === "kuaishou" ? s.last_capture_at : null);
-        var badge = $("#" + p.badgeId, card);
-        if (badge) {
-          badge.innerHTML = logged === true
-            ? '<span class="badge badge-green">已登录</span>'
-            : logged === false
-              ? '<span class="badge badge-gray">未登录</span>'
-              : '<span class="badge badge-gray">未知</span>';
-        }
-        var lastEl = $("#" + p.lastId, card);
-        if (lastEl) lastEl.textContent = fmtDateTime(last);
-      });
+      fillBrowserLoginStatus(card, s, BROWSER_PLATFORMS);
       var portEl = $("#browser-port", card);
       var port = s.port || (window.location.port ? Number(window.location.port) : null);
       if (portEl) portEl.textContent = port ? String(port) : "—";
@@ -1364,22 +1441,10 @@ async function renderBrowserSection() {
       var tf = $("#intake-token-field", card);
       if (tf) tf.value = tokenValue;
     } catch (err) { showBrowserError("上报令牌取不到：" + err.message); }
-    BROWSER_PLATFORMS.forEach(function (p) {
-      $("#" + p.btnId, card).addEventListener("click", function () {
-        var btn = this;
-        errBox.hidden = true;
-        withBusy(btn, async function () {
-          try {
-            await api("POST", "/browser/show-login", { platform: p.platform });
-            toast("登录窗口已打开，请在里面登录" + p.label + "，登完点“刷新状态”", "success");
-            /* 登录是人工操作，15 秒后自动刷新一次状态，免得用户反复点 */
-            setTimeout(function () {
-              if (!document.body.contains(card)) return;
-              api("GET", "/browser/status").then(fillStatus).catch(function () {});
-            }, 15000);
-          } catch (err) { showBrowserError(err.message); }
-        });
-      });
+    bindBrowserLoginButtons(card, BROWSER_PLATFORMS, {
+      clearError: function () { errBox.hidden = true; },
+      onError: showBrowserError,
+      refresh: function () { api("GET", "/browser/status").then(fillStatus).catch(function () {}); },
     });
     $("#browser-status-refresh", card).addEventListener("click", function () {
       var btn = this;
